@@ -25,6 +25,33 @@ const randInt = (a, b) => Math.floor(rand(a, b + 1));
 const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 const damp = (cur, target, lambda, dt) => THREE.MathUtils.lerp(cur, target, 1 - Math.exp(-lambda * dt));
 
+function safeAudio(method, ...args) {
+  try {
+    const fn = audio?.[method];
+    if (typeof fn === 'function') return fn.apply(audio, args);
+  } catch (err) {
+    console.warn(`[audio] ${method} desactivado:`, err);
+  }
+  return undefined;
+}
+
+function safeStorageGet(key, fallback = '') {
+  try {
+    return window.localStorage?.getItem(key) ?? fallback;
+  } catch (err) {
+    console.warn('[storage] localStorage no disponible:', err);
+    return fallback;
+  }
+}
+
+function safeStorageSet(key, value) {
+  try {
+    window.localStorage?.setItem(key, value);
+  } catch (err) {
+    console.warn('[storage] No se pudo guardar la partida:', err);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Constantes de diseño
 // ---------------------------------------------------------------------------
@@ -538,7 +565,7 @@ function destroyObstacle(o, power = 1) {
   const color = o.tint || (theme && theme.glass) || 0xa8e8ff;
   shards.burst(p.x, p.y, p.z, color, o.type === 'ring' || o.type === 'ringBig' ? 34 : 26, power);
   sparks.burst(p.x, p.y, p.z, theme.accent, 10, power);
-  audio.shatter(power);
+  safeAudio('shatter', power);
   cleanupObstacle(o);
 }
 
@@ -709,13 +736,13 @@ let fireCooldown = 0;
 
 function fireBall() {
   if (state !== 'playing' || ammo <= 0 || fireCooldown > 0) {
-    if (ammo <= 0 && state === 'playing') audio.click();
+    if (ammo <= 0 && state === 'playing') safeAudio('click');
     return;
   }
   fireCooldown = FIRE_COOLDOWN;
   ammo--;
   updateAmmoUI();
-  audio.shoot();
+  safeAudio('shoot');
   recoil = 1;
 
   const origin = camBase.clone().add(new THREE.Vector3(0, -0.08, 0.3));
@@ -782,8 +809,8 @@ function collideBallWithPickup(ball, pu) {
 function playerHitsObstacle(o) {
   const cx = camBase.x, cy = camBase.y;
   const p = o.mesh.position;
-  // solo evaluar en el cruce del plano de la cámara (z = 0)
-  if (!(o.prevZ > -0.001 && p.z <= 0.001)) return false;
+  // Los obstáculos avanzan desde z negativa hacia la cámara; evaluar al cruzar z = 0.
+  if (!(o.prevZ <= 0.001 && p.z >= -0.001)) return false;
   if (o.type === 'ring' || o.type === 'ringBig') {
     const dx = cx - p.x, dy = cy - p.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
@@ -811,7 +838,7 @@ function damageHit(o) {
   hearts--;
   combo = 0;
   updateHeartsUI();
-  audio.damage();
+  safeAudio('damage');
   el.flash.classList.remove('hit'); void el.flash.offsetWidth; el.flash.classList.add('hit');
   hitStop = 0.55;
   timeScale = 0.35;
@@ -822,7 +849,7 @@ function damageHit(o) {
 // ---------------------------------------------------------------------------
 // Puntuación / HUD
 // ---------------------------------------------------------------------------
-let score = 0, combo = 0, best = Number(localStorage.getItem('fractura_best') || 0);
+let score = 0, combo = 0, best = Number(safeStorageGet('fractura_best', '0') || 0);
 let breaks = 0, perfects = 0;
 
 function addScore(n, x, y, z, label) {
@@ -880,7 +907,7 @@ function collectPickup(pu) {
   if (i >= 0) pickups.splice(i, 1);
   ammo = Math.min(maxAmmo, ammo + 1);
   updateAmmoUI();
-  audio.pickup();
+  safeAudio('pickup');
   sparks.burst(pu.mesh.position.x, pu.mesh.position.y, pu.mesh.position.z, theme.accent, 8, 0.8);
   popup('+1', pu.mesh.position.x, pu.mesh.position.y, pu.mesh.position.z);
 }
@@ -931,7 +958,7 @@ function applyTheme(idx) {
   document.documentElement.style.setProperty('--accent', '#' + theme.accent.toString(16).padStart(6, '0'));
   document.documentElement.style.setProperty('--accent2', '#' + theme.accent2.toString(16).padStart(6, '0'));
 
-  audio.setTheme(theme.root);
+  safeAudio('setTheme', theme.root);
 }
 
 // ---------------------------------------------------------------------------
@@ -976,8 +1003,8 @@ function startGame(skipMeters = 0) {
   el.hint.classList.remove('fade');
   hintTimer = 7;
   state = 'playing';
-  audio.resume();
-  audio.start();
+  safeAudio('resume');
+  safeAudio('start');
   showBanner('¡A ROMPER!', theme.name);
 }
 
@@ -1002,7 +1029,7 @@ function endToMenu() {
 function gameOverRun() {
   if (state === 'over') return;
   state = 'over';
-  audio.gameOver();
+  safeAudio('gameOver');
   timeScale = 0.3;
   setTimeout(() => {
     el.statScore.textContent = score;
@@ -1010,7 +1037,7 @@ function gameOverRun() {
     el.statBreak.textContent = breaks;
     el.statPerf.textContent = perfects;
     const isBest = score > best;
-    if (isBest) { best = score; localStorage.setItem('fractura_best', String(best)); }
+    if (isBest) { best = score; safeStorageSet('fractura_best', String(best)); }
     el.bestTitle.textContent = (isBest ? '🏆 ¡NUEVO RÉCORD! · ' : 'Récord: ') + best;
     el.gameover.classList.remove('hidden');
   }, 1400);
@@ -1020,16 +1047,16 @@ function pauseGame() {
   if (state !== 'playing') return;
   state = 'paused';
   el.pause.classList.remove('hidden');
-  audio.stopMusic();
+  safeAudio('stopMusic');
 }
 
 function resumeGame() {
   if (state !== 'paused') return;
   state = 'playing';
   el.pause.classList.add('hidden');
-  audio.resume();
-  audio.setTheme(theme.root);
-  audio.resumeMusic();
+  safeAudio('resume');
+  safeAudio('setTheme', theme.root);
+  safeAudio('resumeMusic');
 }
 
 // ---------------------------------------------------------------------------
@@ -1071,8 +1098,16 @@ window.addEventListener('keyup', (e) => { if (e.code === 'Space') spaceHeld = fa
 
 // ?start=800 → comienza a los 800 m (útil para probar paletas / reproducción)
 const SKIP_METERS = clamp(parseInt(new URLSearchParams(location.search).get('start') || '0', 10) || 0, 0, 5000);
-el.btnStart.addEventListener('click', () => { audio.init(); startGame(SKIP_METERS); });
-el.btnRetry.addEventListener('click', () => { audio.init(); startGame(SKIP_METERS); });
+function launchGameFromUI(e) {
+  e?.preventDefault?.();
+  if (state === 'playing') return;
+  safeAudio('init');
+  startGame(SKIP_METERS);
+}
+el.btnStart.addEventListener('pointerup', launchGameFromUI);
+el.btnStart.addEventListener('click', launchGameFromUI);
+el.btnRetry.addEventListener('pointerup', launchGameFromUI);
+el.btnRetry.addEventListener('click', launchGameFromUI);
 el.btnMenu.addEventListener('click', endToMenu);
 el.btnResume.addEventListener('click', resumeGame);
 el.btnPause.addEventListener('click', () => { state === 'playing' ? pauseGame() : (state === 'paused' ? resumeGame() : null); });
@@ -1081,8 +1116,8 @@ el.btnMute.addEventListener('click', toggleMute);
 let muted = false;
 function toggleMute() {
   muted = !muted;
-  audio.init();
-  audio.setMuted(muted);
+  safeAudio('init');
+  safeAudio('setMuted', muted);
   el.btnMute.textContent = muted ? '♪̶' : '♪';
 }
 
@@ -1153,7 +1188,7 @@ function updateWorld(dt) {
           const hitPoint = b.mesh.position.clone();
           shards.burst(hitPoint.x, hitPoint.y, hitPoint.z, theme.glass, 30, 1.2);
           sparks.burst(hitPoint.x, hitPoint.y, hitPoint.z, theme.accent, 14, 1.1);
-          audio.shatter(1.1);
+          safeAudio('shatter', 1.1);
           if (o.type === 'shelf') dropPickupsFromShelf(o);
           const sc = o.score || 10;
           addScore(sc, hitPoint.x, hitPoint.y, hitPoint.z);
@@ -1183,7 +1218,7 @@ function updateWorld(dt) {
     o.mesh.position.z += dz;
     if (o.type === 'crystal') o.mesh.rotation.y += dt * 0.8;
     // cruce de anillo sin tocarlo → ¡PERFECTO!
-    if (state === 'playing' && o.type === 'ring' && o.prevZ > 0 && o.mesh.position.z <= 0 && !o.kicked) {
+    if (state === 'playing' && o.type === 'ring' && o.prevZ <= 0 && o.mesh.position.z >= 0 && !o.kicked) {
       o.kicked = true;
       const dx = camBase.x - o.mesh.position.x, dy = camBase.y - o.mesh.position.y;
       if (Math.sqrt(dx * dx + dy * dy) < o.openR * 0.82) {
@@ -1192,7 +1227,7 @@ function updateWorld(dt) {
       }
     }
     // impacto con el jugador
-    if (state === 'playing' && Math.abs(o.mesh.position.z) < 1.1 && playerHitsObstacle(o)) {
+    if (state === 'playing' && o.prevZ <= 0 && o.mesh.position.z >= 0 && playerHitsObstacle(o)) {
       if (o.type === 'shelf') dropPickupsFromShelf(o);
       const hp = o.mesh.position;
       shards.burst(hp.x, hp.y, hp.z, theme.glass, 26, 1);
@@ -1219,7 +1254,7 @@ function updateWorld(dt) {
       pu.mesh.position.y = 0.18;
       pu.vel.y *= -0.62;
       pu.vel.x *= 0.9; pu.vel.z *= 0.9;
-      if (Math.abs(pu.vel.y) > 1.2) audio.metalBounce();
+      if (Math.abs(pu.vel.y) > 1.2) safeAudio('metalBounce');
     }
     pu.mesh.rotation.x += pu.vr * dt; pu.mesh.rotation.y += pu.vr * 0.7 * dt;
     if (pu.age > 1.15) pu.active = true;
@@ -1270,7 +1305,7 @@ function updateWorld(dt) {
     lastThemeDistance = themeDist;
     applyTheme(themeDist);
     showBanner(theme.name, 'Sección ' + (themeDist + 1));
-    audio.checkpoint();
+    safeAudio('checkpoint');
   }
   const cpDist = Math.floor(gameDist / CHECKPOINT_EVERY);
   if (cpDist !== lastCheckpointDistance && state === 'playing') {
@@ -1278,7 +1313,7 @@ function updateWorld(dt) {
     ammo = Math.min(maxAmmo, ammo + 4);
     updateAmmoUI();
     showBanner('RECARGA', '+4 esferas');
-    audio.checkpoint();
+    safeAudio('checkpoint');
   }
 
   // HUD distancia

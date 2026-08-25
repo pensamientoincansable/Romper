@@ -20,32 +20,47 @@ export class AudioEngine {
 
   init() {
     if (this._inited) return;
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return;
-    this.ctx = new AC();
-    this.master = this.ctx.createGain();
-    this.master.gain.value = this.muted ? 0 : 0.9;
-    this.master.connect(this.ctx.destination);
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      this.ctx = new AC();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = this.muted ? 0 : 0.9;
+      this.master.connect(this.ctx.destination);
 
-    this.musicBus = this.ctx.createGain();
-    this.musicBus.gain.value = 0.5;
-    this.musicBus.connect(this.master);
+      this.musicBus = this.ctx.createGain();
+      this.musicBus.gain.value = 0.5;
+      this.musicBus.connect(this.master);
 
-    this.sfxBus = this.ctx.createGain();
-    this.sfxBus.gain.value = 1.0;
-    this.sfxBus.connect(this.master);
+      this.sfxBus = this.ctx.createGain();
+      this.sfxBus.gain.value = 1.0;
+      this.sfxBus.connect(this.master);
 
-    // buffer de ruido blanco reutilizable
-    const len = this.ctx.sampleRate * 1.2;
-    this._noiseBuf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
-    const d = this._noiseBuf.getChannelData(0);
-    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+      // buffer de ruido blanco reutilizable
+      const len = this.ctx.sampleRate * 1.2;
+      this._noiseBuf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+      const d = this._noiseBuf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
 
-    this._startMusic();
-    this._inited = true;
+      this._startMusic();
+      this._inited = true;
+    } catch (err) {
+      console.warn('[audio] WebAudio no disponible; el juego continuará sin sonido.', err);
+      this.ctx = null;
+      this.master = null;
+      this.musicBus = null;
+      this.sfxBus = null;
+      this._inited = true;
+    }
   }
 
-  resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); }
+  resume() {
+    try {
+      if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume()?.catch?.(() => {});
+    } catch {
+      // Algunos navegadores pueden rechazar resume() si no hay gesto de usuario.
+    }
+  }
 
   setMuted(m) {
     this.muted = m;
@@ -78,8 +93,13 @@ export class AudioEngine {
     const f = this.ctx.createBiquadFilter();
     f.type = filterType; f.frequency.value = freq; f.Q.value = q;
     const g = this.ctx.createGain();
-    const p = this.ctx.createStereoPanner(); p.pan.value = pan;
-    src.connect(f); f.connect(g); g.connect(p); p.connect(this.sfxBus);
+    src.connect(f); f.connect(g);
+    if (typeof this.ctx.createStereoPanner === 'function') {
+      const p = this.ctx.createStereoPanner(); p.pan.value = pan;
+      g.connect(p); p.connect(this.sfxBus);
+    } else {
+      g.connect(this.sfxBus);
+    }
     this._env(g, t0, 0.004, peak, dur);
     src.start(t0, Math.random() * 0.4, dur + 0.1);
     src.stop(t0 + dur + 0.15);
@@ -91,8 +111,13 @@ export class AudioEngine {
     o.frequency.setValueAtTime(freq, t0);
     if (slideTo !== null) o.frequency.exponentialRampToValueAtTime(Math.max(30, slideTo), t0 + dur);
     const g = this.ctx.createGain();
-    const p = this.ctx.createStereoPanner(); p.pan.value = pan;
-    o.connect(g); g.connect(p); p.connect(bus || this.sfxBus);
+    o.connect(g);
+    if (typeof this.ctx.createStereoPanner === 'function') {
+      const p = this.ctx.createStereoPanner(); p.pan.value = pan;
+      g.connect(p); p.connect(bus || this.sfxBus);
+    } else {
+      g.connect(bus || this.sfxBus);
+    }
     this._env(g, t0, 0.006, peak, dur);
     o.start(t0); o.stop(t0 + dur + 0.1);
   }
