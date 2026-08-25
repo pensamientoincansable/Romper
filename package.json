@@ -1,0 +1,20 @@
+{
+  "name": "fractura",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "FRACTURA — un juego minimalista de romper cristales con esferas. Inspirado en la esencia de Smash Hit, con identidad propia.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "@sparticuz/chromium": "^149.0.0",
+    "playwright": "^1.62.1",
+    "vite": "^6.0.7"
+  }
+}

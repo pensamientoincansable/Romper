@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>FRACTURA — rompe el vidrio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath d='M32 4 L42 24 L58 30 L44 44 L46 60 L32 50 L18 60 L20 44 L6 30 L22 24 Z' fill='%236fd7ff'/%3E%3C/svg%3E" />
+  <style>
+    :root {
+      --accent: #6fd7ff;
+      --accent2: #ff4fd8;
+      --glass-tint: rgba(111, 215, 255, 0.16);
+      --ink: #eaf6ff;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      background: #030711;
+      color: var(--ink);
+      font-family: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+      -webkit-user-select: none; user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: none;
+      overscroll-behavior: none;
+    }
+    #app { position: fixed; inset: 0; }
+    canvas { display: block; width: 100%; height: 100%; }
+
+    /* ---------- overlays ---------- */
+    .overlay {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      flex-direction: column; text-align: center; z-index: 30;
+      background: radial-gradient(120% 90% at 50% 20%, rgba(6, 14, 34, 0.55), rgba(2, 5, 15, 0.86));
+      backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    }
+    .overlay.hidden { display: none; }
+
+    .logo {
+      font-size: clamp(3.4rem, 13vw, 7.2rem);
+      font-weight: 800; letter-spacing: 0.22em; line-height: 1;
+      background: linear-gradient(115deg, #ffffff 5%, var(--accent) 38%, var(--accent2) 72%, #ffffff 100%);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+      filter: drop-shadow(0 0 26px color-mix(in srgb, var(--accent) 55%, transparent));
+      animation: logoFloat 4.5s ease-in-out infinite;
+    }
+    @keyframes logoFloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-9px); } }
+    .tagline { margin-top: 0.7rem; font-size: clamp(0.85rem, 2.6vw, 1.05rem); letter-spacing: 0.34em; text-transform: uppercase; color: color-mix(in srgb, var(--ink) 74%, transparent); }
+
+    .cards { display: flex; gap: 10px; margin-top: 2.1rem; flex-wrap: wrap; justify-content: center; max-width: 720px; padding: 0 18px; }
+    .card {
+      min-width: 150px; padding: 12px 16px; border-radius: 14px;
+      background: var(--glass-tint); border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
+      box-shadow: 0 8px 30px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.08);
+    }
+    .card b { font-size: 0.86rem; letter-spacing: 0.08em; color: var(--accent); display:block; margin-bottom: 4px; }
+    .card span { font-size: 0.74rem; line-height: 1.45; color: color-mix(in srgb, var(--ink) 78%, transparent); display: block; }
+
+    .btn {
+      margin-top: 2.4rem; cursor: pointer; border: none; border-radius: 999px;
+      padding: 16px 58px; font-size: 1.05rem; font-weight: 700; letter-spacing: 0.32em; text-transform: uppercase;
+      color: #04101d; background: linear-gradient(100deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #ffffff));
+      box-shadow: 0 10px 38px color-mix(in srgb, var(--accent) 42%, transparent), inset 0 1px 0 rgba(255,255,255,0.75);
+      transition: transform 0.14s ease, box-shadow 0.14s ease;
+    }
+    .btn:active { transform: scale(0.96); }
+    .btn.small { padding: 11px 30px; font-size: 0.82rem; margin-top: 1.2rem; }
+
+    .foot { position:absolute; bottom: 14px; left: 0; right: 0; font-size: 0.66rem; letter-spacing: 0.2em; color: color-mix(in srgb, var(--ink) 45%, transparent); text-transform: uppercase; }
+
+    /* ---------- HUD ---------- */
+    #hud { position: fixed; inset: 0; pointer-events: none; z-index: 20; }
+    .hudCorner { position: absolute; top: max(14px, env(safe-area-inset-top)); padding: 0 18px; }
+    #hudLeft { left: 0; }
+    #hudRight { right: 0; text-align: right; }
+    .hudLabel { font-size: 0.6rem; letter-spacing: 0.34em; color: color-mix(in srgb, var(--ink) 55%, transparent); text-transform: uppercase; }
+    #scoreVal { font-size: clamp(1.7rem, 5vw, 2.5rem); font-weight: 800; letter-spacing: 0.04em; text-shadow: 0 0 18px color-mix(in srgb, var(--accent) 60%, transparent); line-height: 1.05; }
+    #comboVal { font-size: 0.8rem; font-weight: 700; letter-spacing: 0.18em; color: var(--accent2); text-transform: uppercase; min-height: 1.1em; }
+    .dotRow { display: flex; gap: 5px; justify-content: flex-end; margin-top: 6px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: color-mix(in srgb, var(--accent) 85%, transparent); box-shadow: 0 0 9px color-mix(in srgb, var(--accent) 80%, transparent); transition: background 0.2s, box-shadow 0.2s, opacity 0.2s; }
+    .dot.off { background: rgba(255,255,255,0.10); box-shadow: none; opacity: 0.75; }
+    #ammoReadout { margin-top: 8px; font-size: 0.78rem; letter-spacing: 0.22em; color: color-mix(in srgb, var(--ink) 80%, transparent); font-weight: 600; }
+    #heartsRow { margin-top: 4px; font-size: 0.92rem; letter-spacing: 0.28em; color: var(--accent2); text-shadow: 0 0 12px color-mix(in srgb, var(--accent2) 70%, transparent); }
+    #distReadout { position: absolute; bottom: max(14px, env(safe-area-inset-bottom)); right: 18px; font-size: 0.72rem; letter-spacing: 0.28em; color: color-mix(in srgb, var(--ink) 52%, transparent); }
+
+    #reticle {
+      position: fixed; left: 50%; top: 50%; width: 34px; height: 34px; margin: -17px 0 0 -17px;
+      border: 1.5px solid color-mix(in srgb, var(--ink) 75%, transparent); border-radius: 50%;
+      box-shadow: 0 0 14px rgba(0,0,0,0.4), inset 0 0 10px color-mix(in srgb, var(--accent) 25%, transparent);
+      transform: translate(var(--rx, 0px), var(--ry, 0px));
+      transition: transform 0.05s linear; pointer-events: none;
+      mix-blend-mode: difference;
+    }
+    #reticle::after { content:""; position:absolute; left:50%; top:50%; width:3px; height:3px; margin:-1.5px; border-radius:50%; background:#fff; }
+
+    #hint {
+      position: fixed; bottom: max(18px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
+      font-size: 0.72rem; letter-spacing: 0.3em; text-transform: uppercase; text-align:center;
+      color: color-mix(in srgb, var(--ink) 70%, transparent); pointer-events: none;
+      transition: opacity 0.6s ease; line-height: 1.8;
+    }
+    #hint.fade { opacity: 0; }
+
+    #bannerWrap { position: fixed; left: 0; right: 0; top: 30%; display: flex; flex-direction: column; align-items: center; pointer-events: none; }
+    #banner { font-size: clamp(1.5rem, 6vw, 2.8rem); font-weight: 800; letter-spacing: 0.4em; text-transform: uppercase; opacity: 0; transition: opacity 0.4s ease, transform 0.4s ease; transform: translateY(10px) scale(0.98); text-shadow: 0 0 30px color-mix(in srgb, var(--accent) 65%, transparent); color: var(--ink); }
+    #bannerSub { font-size: clamp(0.7rem, 2.2vw, 0.9rem); letter-spacing: 0.4em; text-transform: uppercase; color: var(--accent); opacity: 0; transition: opacity 0.4s ease 0.1s; margin-top: 8px; }
+    #bannerWrap.show #banner { opacity: 1; transform: translateY(0) scale(1); }
+    #bannerWrap.show #bannerSub { opacity: 1; }
+
+    .popup { position: fixed; font-weight: 800; font-size: 1.15rem; letter-spacing: 0.12em; color: var(--accent); text-shadow: 0 0 16px color-mix(in srgb, var(--accent) 80%, transparent); pointer-events: none; animation: pop 0.95s ease-out forwards; }
+    .popup.gold { color: #ffe9a3; text-shadow: 0 0 18px rgba(255, 214, 110, 0.9); }
+    @keyframes pop { 0% { opacity:0; transform: translate(-50%,-50%) scale(0.7); } 12% { opacity:1; transform: translate(-50%,-58%) scale(1.08); } 100% { opacity:0; transform: translate(-50%,-140%) scale(1); } }
+
+    /* ---------- fx overlays ---------- */
+    #flash { position: fixed; inset: 0; background: radial-gradient(120% 120% at 50% 50%, transparent 30%, rgba(255, 40, 70, 0.55)); opacity: 0; pointer-events: none; z-index: 25; mix-blend-mode: screen; }
+    #flash.hit { animation: flashHit 0.4s ease-out; }
+    @keyframes flashHit { 0% { opacity: 1; } 100% { opacity: 0; } }
+    #vignette { position: fixed; inset: 0; pointer-events: none; z-index: 15; background: radial-gradient(120% 100% at 50% 45%, transparent 58%, rgba(0,0,0,0.5)); }
+
+    #stats { display:flex; gap: 30px; margin-top: 1.6rem; flex-wrap: wrap; justify-content: center; }
+    .stat b { display:block; font-size: 1.6rem; color: var(--accent); font-weight: 800; }
+    .stat span { font-size: 0.62rem; letter-spacing: 0.24em; text-transform: uppercase; color: color-mix(in srgb, var(--ink) 60%, transparent); }
+    #bestTitle { margin-top: 1.1rem; font-size: 0.72rem; letter-spacing: 0.3em; color: color-mix(in srgb, var(--ink) 55%, transparent); text-transform: uppercase; }
+
+    #uiBtns { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); display: flex; gap: 8px; z-index: 26; }
+    .iconBtn { pointer-events: auto; cursor: pointer; width: 38px; height: 38px; border-radius: 50%; border: 1px solid color-mix(in srgb, var(--ink) 22%, transparent); background: rgba(10, 18, 36, 0.45); color: var(--ink); font-size: 15px; display:flex; align-items:center; justify-content:center; transition: background 0.15s; }
+    .iconBtn:active { background: rgba(255,255,255,0.16); }
+
+    @media (max-width: 640px) {
+      .cards { gap: 7px; }
+      .card { min-width: 130px; padding: 9px 12px; }
+      #hudRight { padding-right: 12px; }
+      #hudLeft { padding-left: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div id="vignette"></div>
+  <div id="flash"></div>
+
+  <!-- HUD -->
+  <div id="hud" class="hidden">
+    <div id="hudLeft" class="hudCorner">
+      <div class="hudLabel">Puntos</div>
+      <div id="scoreVal">0</div>
+      <div id="comboVal"></div>
+    </div>
+    <div id="hudRight" class="hudCorner">
+      <div class="hudLabel">Esferas</div>
+      <div class="dotRow" id="ammoDots"></div>
+      <div id="ammoReadout">18 / 30</div>
+      <div id="heartsRow">◆ ◆ ◆ ◆</div>
+    </div>
+    <div id="distReadout">0 m</div>
+  </div>
+  <div id="reticle" class="hidden"></div>
+  <div id="hint" class="hidden">Arrastra para apuntar<br/>Mantén pulsado para disparar</div>
+  <div id="bannerWrap"><div id="banner"></div><div id="bannerSub"></div></div>
+
+  <div id="uiBtns" class="hidden">
+    <div class="iconBtn" id="btnPause" title="Pausa">❚❚</div>
+    <div class="iconBtn" id="btnMute" title="Sonido">♪</div>
+  </div>
+
+  <!-- Título -->
+  <div id="title" class="overlay">
+    <div class="logo">FRACTURA</div>
+    <div class="tagline">Rompe el vidrio · Mantén el ritmo</div>
+    <div class="cards">
+      <div class="card"><b>Apuntar</b><span>Arrastra el dedo o el ratón para mover la mira.</span></div>
+      <div class="card"><b>Disparar</b><span>Mantén pulsado: la esfera metálica sale sola, en ráfaga.</span></div>
+      <div class="card"><b>Romper</b><span>El vidrio se hace añicos. Cada sección cambia de color.</span></div>
+      <div class="card"><b>Puntuar</b><span>Pasa por los anillos sin tocarlos: bonus ¡PERFECTO!</span></div>
+      <div class="card"><b>Esferas</b><span>Rompe las repisas de cristal para recargar munición.</span></div>
+    </div>
+    <button class="btn" id="btnStart">Jugar</button>
+    <div class="foot">100 % procedural · sin assets externos · hecho con three.js</div>
+  </div>
+
+  <!-- Game over -->
+  <div id="gameover" class="overlay hidden">
+    <div class="logo" style="font-size: clamp(2.2rem, 8vw, 4.2rem);">FIN DEL RECORRIDO</div>
+    <div class="tagline" id="goReason">La corriente te alcanzó</div>
+    <div id="stats">
+      <div class="stat"><b id="statScore">0</b><span>Puntos</span></div>
+      <div class="stat"><b id="statDist">0 m</b><span>Distancia</span></div>
+      <div class="stat"><b id="statBreak">0</b><span>Cristales rotos</span></div>
+      <div class="stat"><b id="statPerf">0</b><span>Perfectos</span></div>
+    </div>
+    <div id="bestTitle">Récord: 0</div>
+    <button class="btn" id="btnRetry">Reintentar</button>
+    <button class="btn small" id="btnMenu">Menú</button>
+  </div>
+
+  <!-- Pausa -->
+  <div id="pause" class="overlay hidden">
+    <div class="logo" style="font-size: clamp(2rem, 7vw, 3.4rem);">PAUSA</div>
+    <div class="tagline" style="margin-top:1rem;">Toca para continuar</div>
+    <button class="btn" id="btnResume">Seguir</button>
+  </div>
+
+  <div id="webglError" class="overlay hidden">
+    <div class="logo" style="font-size:1.6rem;">Tu navegador no soporta WebGL</div>
+    <div class="tagline" style="margin-top:1rem;">Prueba con Chrome, Firefox o Safari recientes.</div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
