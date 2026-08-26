@@ -1131,18 +1131,6 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => { if (e.code === 'Space') spaceHeld = false; });
 
-// ?start=800 → comienza a los 800 m (útil para probar paletas / reproducción)
-const SKIP_METERS = clamp(parseInt(new URLSearchParams(location.search).get('start') || '0', 10) || 0, 0, 5000);
-function launchGameFromUI(e) {
-  e?.preventDefault?.();
-  if (state === 'playing') return;
-  safeAudio('init');
-  startGame(SKIP_METERS);
-}
-el.btnStart.addEventListener('pointerup', launchGameFromUI);
-el.btnStart.addEventListener('click', launchGameFromUI);
-el.btnRetry.addEventListener('pointerup', launchGameFromUI);
-el.btnRetry.addEventListener('click', launchGameFromUI);
 el.btnMenu.addEventListener('click', endToMenu);
 el.btnResume.addEventListener('click', resumeGame);
 el.btnPause.addEventListener('click', () => { state === 'playing' ? pauseGame() : (state === 'paused' ? resumeGame() : null); });
