@@ -63,6 +63,7 @@
       box-shadow: 0 10px 38px color-mix(in srgb, var(--accent) 42%, transparent), inset 0 1px 0 rgba(255,255,255,0.75);
       transition: transform 0.14s ease, box-shadow 0.14s ease;
     }
+    .btn { touch-action: manipulation; pointer-events: auto; position: relative; z-index: 40; }
     .btn:active { transform: scale(0.96); }
     .btn.small { padding: 11px 30px; font-size: 0.82rem; margin-top: 1.2rem; }
 
@@ -190,8 +191,8 @@
       <div class="stat"><b id="statPerf">0</b><span>Perfectos</span></div>
     </div>
     <div id="bestTitle">Récord: 0</div>
-    <button class="btn" id="btnRetry">Reintentar</button>
-    <button class="btn small" id="btnMenu">Menú</button>
+    <button type="button" class="btn" id="btnRetry">Reintentar</button>
+    <button type="button" class="btn small" id="btnMenu">Menú</button>
   </div>
 
   <!-- Pausa -->
