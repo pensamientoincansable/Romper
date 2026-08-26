@@ -84,6 +84,41 @@ const el = {
   goReason: $('goReason'), webglError: $('webglError'), uiBtns: $('uiBtns'),
 };
 
+// Arranque diferido: el botón debe responder aunque Three.js aún no haya terminado.
+let bootReady = false;
+let pendingLaunch = false;
+const SKIP_METERS = clamp(parseInt(new URLSearchParams(location.search).get('start') || '0', 10) || 0, 0, 5000);
+
+function launchGameFromUI(e) {
+  e?.preventDefault?.();
+  e?.stopPropagation?.();
+  pendingLaunch = true;
+  tryStartPending();
+}
+
+function tryStartPending() {
+  if (!pendingLaunch || !bootReady) return;
+  if (typeof state !== 'undefined' && state === 'playing') {
+    pendingLaunch = false;
+    return;
+  }
+  pendingLaunch = false;
+  safeAudio('init');
+  startGame(SKIP_METERS);
+}
+
+function bindLaunch(node) {
+  if (!node) return;
+  node.addEventListener('pointerdown', launchGameFromUI, { capture: true });
+  node.addEventListener('pointerup', launchGameFromUI, { capture: true });
+  node.addEventListener('click', launchGameFromUI, { capture: true });
+  node.addEventListener('keydown', (e) => {
+    if (e.code === 'Enter' || e.code === 'Space') launchGameFromUI(e);
+  });
+}
+bindLaunch(el.btnStart);
+bindLaunch(el.btnRetry);
+
 // ---------------------------------------------------------------------------
 // Renderer / escena / cámara
 // ---------------------------------------------------------------------------
@@ -706,13 +741,13 @@ function spawnChamber() {
   const R = Math.random;
   const z = spawnCursor;
   // peso: evita repetir el mismo patrón dos veces seguidas
-  const alive = PATTERNS.map((p, i) => ({ p, i }));
-  alive.splice(lastPattern, 1);
-  const weights = alive.map(({ p }) => p.w);
-  const total = weights.reduce((a, b) => a + b, 0);
+  const pool = lastPattern >= 0
+    ? PATTERNS.filter((_, i) => i !== lastPattern)
+    : PATTERNS.slice();
+  const total = pool.reduce((a, p) => a + p.w, 0) || 1;
   let t = R() * total;
-  let chosen = alive[0];
-  for (const { p } of alive) { t -= p.w; if (t <= 0) { chosen = p; break; } }
+  let chosen = pool[0] || PATTERNS[0];
+  for (const p of pool) { t -= p.w; if (t <= 0) { chosen = p; break; } }
   lastPattern = PATTERNS.indexOf(chosen);
   chosen.build(z, R);
   spawnCursor = z - rand(16, 26);
@@ -1376,6 +1411,8 @@ function frame(now) {
 requestAnimationFrame(frame);
 updateAmmoUI();
 updateHeartsUI();
+bootReady = true;
+tryStartPending();
 
 // hook de depuración (solo si ?debug=1) — útil para pruebas automatizadas
 if (new URLSearchParams(location.search).has('debug')) {
