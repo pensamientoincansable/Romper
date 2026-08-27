@@ -84,40 +84,10 @@ const el = {
   goReason: $('goReason'), webglError: $('webglError'), uiBtns: $('uiBtns'),
 };
 
-// Arranque diferido: el botón debe responder aunque Three.js aún no haya terminado.
-let bootReady = false;
-let pendingLaunch = false;
-const SKIP_METERS = clamp(parseInt(new URLSearchParams(location.search).get('start') || '0', 10) || 0, 0, 5000);
-
-function launchGameFromUI(e) {
-  e?.preventDefault?.();
-  e?.stopPropagation?.();
-  pendingLaunch = true;
-  tryStartPending();
-}
-
-function tryStartPending() {
-  if (!pendingLaunch || !bootReady) return;
-  if (typeof state !== 'undefined' && state === 'playing') {
-    pendingLaunch = false;
-    return;
-  }
-  pendingLaunch = false;
-  safeAudio('init');
-  startGame(SKIP_METERS);
-}
-
-function bindLaunch(node) {
-  if (!node) return;
-  node.addEventListener('pointerdown', launchGameFromUI, { capture: true });
-  node.addEventListener('pointerup', launchGameFromUI, { capture: true });
-  node.addEventListener('click', launchGameFromUI, { capture: true });
-  node.addEventListener('keydown', (e) => {
-    if (e.code === 'Enter' || e.code === 'Space') launchGameFromUI(e);
-  });
-}
-bindLaunch(el.btnStart);
-bindLaunch(el.btnRetry);
+// La lógica de lanzamiento de los botones (Jugar / Reintentar) vive en la
+// sección "Entrada", donde se declara SKIP_METERS. (Antes había aquí una
+// segunda copia del bloque de arranque que re-declaraba const SKIP_METERS y
+// rompía el parseo de todo el módulo → el botón Jugar no hacía nada.)
 
 // ---------------------------------------------------------------------------
 // Renderer / escena / cámara
@@ -482,8 +452,8 @@ class ShardSystem {
       this.maxLife[i] = this.life[i];
       this.baseScale[i] = rand(0.6, 1.65);
       this.color[i * 3] = c.r; this.color[i * 3 + 1] = c.g; this.color[i * 3 + 2] = c.b;
+      this.mesh.setColorAt(i, c);
     }
-    for (let i = 0; i < Math.min(n, this.count); i++) this.mesh.setColorAt(i, new THREE.Color(0xffffff));
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
   }
 
@@ -1020,6 +990,11 @@ function startGame(skipMeters = 0) {
   score = 0; combo = 0; breaks = 0; perfects = 0;
   gameDist = skipMeters;
   hearts = 4; ammo = 18;
+  timeScale = 1; hitStop = 0;
+  recoil = 0; fireCooldown = 0;
+  pointerDown = false; spaceHeld = false;
+  bannerTimer = 0;
+  el.bannerWrap.classList.remove('show');
   lastPattern = -1;
   spawnCursor = -55 - skipMeters;
   lastThemeDistance = Math.floor(skipMeters / THEME_EVERY);
@@ -1054,6 +1029,10 @@ function endToMenu() {
   for (const b of [...balls]) { scene.remove(b.mesh); }
   balls.length = 0;
   spawnCursor = -55;
+  bannerTimer = 0;
+  el.bannerWrap.classList.remove('show');
+  el.hint.classList.add('hidden');
+  el.hint.classList.remove('fade');
   el.hud.classList.add('hidden');
   el.reticle.classList.add('hidden');
   el.uiBtns.classList.add('hidden');
@@ -1064,6 +1043,7 @@ function endToMenu() {
 function gameOverRun() {
   if (state === 'over') return;
   state = 'over';
+  pointerDown = false; spaceHeld = false;
   safeAudio('gameOver');
   timeScale = 0.3;
   setTimeout(() => {
@@ -1135,16 +1115,18 @@ window.addEventListener('keyup', (e) => { if (e.code === 'Space') spaceHeld = fa
 const SKIP_METERS = clamp(parseInt(new URLSearchParams(location.search).get('start') || '0', 10) || 0, 0, 5000);
 function launchGameFromUI(e) {
   e?.preventDefault?.();
+  // El botón conserva el foco tras el clic; Espacio dispara esferas, así que
+  // lo desenfocamos para que no se interprete como "reintento" accidental.
+  if (e?.currentTarget?.blur) e.currentTarget.blur();
   if (state === 'playing') return;
   safeAudio('init');
   startGame(SKIP_METERS);
 }
-el.btnStart.addEventListener('pointerup', launchGameFromUI);
 el.btnStart.addEventListener('click', launchGameFromUI);
-el.btnRetry.addEventListener('pointerup', launchGameFromUI);
 el.btnRetry.addEventListener('click', launchGameFromUI);
 el.btnMenu.addEventListener('click', endToMenu);
 el.btnResume.addEventListener('click', resumeGame);
+el.pause.addEventListener('click', resumeGame); // "Toca para continuar"
 el.btnPause.addEventListener('click', () => { state === 'playing' ? pauseGame() : (state === 'paused' ? resumeGame() : null); });
 el.btnMute.addEventListener('click', toggleMute);
 
@@ -1258,6 +1240,7 @@ function updateWorld(dt) {
       const dx = camBase.x - o.mesh.position.x, dy = camBase.y - o.mesh.position.y;
       if (Math.sqrt(dx * dx + dy * dy) < o.openR * 0.82) {
         perfects++;
+        safeAudio('perfect');
         addScore(90, o.mesh.position.x, o.mesh.position.y, o.mesh.position.z, '¡PERFECTO!');
       }
     }
@@ -1411,8 +1394,6 @@ function frame(now) {
 requestAnimationFrame(frame);
 updateAmmoUI();
 updateHeartsUI();
-bootReady = true;
-tryStartPending();
 
 // hook de depuración (solo si ?debug=1) — útil para pruebas automatizadas
 if (new URLSearchParams(location.search).has('debug')) {
@@ -1421,6 +1402,17 @@ if (new URLSearchParams(location.search).has('debug')) {
     state: () => state,
     hearts: () => hearts,
     gameDist: () => gameDist,
+    score: () => score,
+    ammo: () => ammo,
+    breaks: () => breaks,
+    perfects: () => perfects,
+    obstacles: () => obstacles.length,
+    aim: () => ({ x: aim.x, y: aim.y, tx: aimTarget.x, ty: aimTarget.y }),
+    // Apunta la puntería directamente (sin ratón) para pruebas deterministas.
+    setAim: (x, y) => {
+      aimTarget.x = clamp(x, -TUNNEL_HALF + 0.25, TUNNEL_HALF - 0.25);
+      aimTarget.y = clamp(y, 0.7, 3.5);
+    },
     cam: () => ({ x: camera.position.x, y: camera.position.y, z: camera.position.z, rx: camera.rotation.x, ry: camera.rotation.y, rz: camera.rotation.z }),
     segs: () => envSegments.slice(0, 14).map((s) => Math.round(s.position.z)),
   };
