@@ -1,17 +1,12 @@
 // Prueba de humo automatizada: arranca FRACTURA, juega y captura pantallas.
-import { chromium as pw } from 'playwright';
-import chromiumBin from '@sparticuz/chromium';
+import { launchChromium } from './lib.mjs';
 import { mkdirSync } from 'fs';
 
 const BASE_URL = process.env.URL || 'http://localhost:5173';
 const OUT = new URL('./shots/', import.meta.url).pathname;
 mkdirSync(OUT, { recursive: true });
 
-const browser = await pw.launch({
-  executablePath: await chromiumBin.executablePath(),
-  headless: true,
-  args: [...chromiumBin.args, '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
-});
+const browser = await launchChromium();
 
 const page = await browser.newPage({ viewport: { width: 960, height: 540 } });
 page.setDefaultTimeout(120000);
