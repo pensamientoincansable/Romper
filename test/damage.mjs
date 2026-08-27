@@ -1,16 +1,11 @@
 // Comprueba daño por colisión y pantalla de game over.
-import { chromium as pw } from 'playwright';
-import chromiumBin from '@sparticuz/chromium';
+import { launchChromium } from './lib.mjs';
 import { mkdirSync } from 'fs';
 
 const OUT = new URL('./shots/', import.meta.url).pathname;
 mkdirSync(OUT, { recursive: true });
 
-const browser = await pw.launch({
-  executablePath: await chromiumBin.executablePath(),
-  headless: true,
-  args: [...chromiumBin.args, '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
-});
+const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 960, height: 540 } });
 page.setDefaultTimeout(90000);
 page.on('pageerror', (e) => console.log('[pageerror]', e.message));

@@ -69,7 +69,7 @@ export class AudioEngine {
 
   setTheme(rootHz) {
     this._scaleRoot = rootHz;
-    if (!this._music) return;
+    if (!this.ctx || !this._music) return;
     this._music.root = rootHz;
     // El pad abandona la nota anterior suavemente
     const t = this.ctx.currentTime;
@@ -212,6 +212,9 @@ export class AudioEngine {
   _startMusic() {
     const ctx = this.ctx;
     const t = ctx.currentTime;
+
+    // Marca la partitura activa: setTheme() la usa para reafinar el pad.
+    this._music = { root: this._scaleRoot };
 
     // Pad: 2 osciladores desafinados + filtro + LFO suave
     this._padGains = [];
