@@ -207,6 +207,26 @@
     <div class="tagline" style="margin-top:1rem;">Prueba con Chrome, Firefox o Safari recientes.</div>
   </div>
 
-  <script type="module" src="/src/main.js"></script>
+  <!--
+    Import map de respaldo: cuando esta página se sirve "en crudo" (p. ej.
+    GitHub Pages, que publica los archivos del repo tal cual, sin pasar por
+    Vite) el navegador ejecuta directamente el import de 'three' del código
+    fuente. Ese especificador "desnudo" solo Vite sabe resolverlo (usando
+    node_modules) durante npm run dev o npm run build; sin este mapa, el
+    módulo entero falla al resolver 'three' ANTES de ejecutar una sola
+    línea, así que ningún listener llega a registrarse y el botón "Jugar"
+    no responde en ningún navegador. Vite resuelve 'three' desde
+    node_modules como siempre en dev/build, así que este mapa es inofensivo
+    ahí y solo entra en juego cuando no hay bundler de por medio.
+  -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      }
+    }
+  </script>
+  <script type="module" src="./src/main.js"></script>
 </body>
 </html>
