@@ -1,6 +1,7 @@
 // Verificación completa de jugabilidad de FRACTURA (headless, WebGL por software).
-// Recorre todo el ciclo: menú → jugar → disparar → romper → pausa → game over
-// → reintentar → game over → menú. Sale con código 1 si cualquier comprobación falla.
+// Recorre todo el ciclo: menú → jugar → toque preciso (tirachinas) → romper y
+// ganar esferas → ajustes (volumen/calidad/modo seguro) → pausa → game over
+// → reintentar → menú. Sale con código 1 si cualquier comprobación falla.
 //
 // Nota: con WebGL por software (SwiftShader) el juego corre más lento que a
 // tiempo real, por eso las comprobaciones usan esperas con sondeo (polling)
@@ -32,8 +33,10 @@ const readState = () => page.evaluate(() => window.__fractura.state());
 const isHidden = (id) => page.evaluate((elId) => document.getElementById(elId).classList.contains('hidden'), id);
 const readStats = () => page.evaluate(() => {
   const f = window.__fractura;
-  return { s: f.score(), b: f.breaks(), p: f.perfects(), a: f.ammo(), h: f.hearts(), d: f.gameDist() };
+  return { s: f.score(), b: f.breaks(), p: f.perfects(), a: f.ammo(), h: f.hearts(), d: f.gameDist(), shots: f.shots(), g: f.ammoGained() };
 });
+const setAim = (x, y) => page.evaluate(([xx, yy]) => window.__fractura.setAim(xx, yy), [x, y]);
+const readAim = () => page.evaluate(() => window.__fractura.aim());
 
 // ---------------------------------------------------------------- carga
 await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
@@ -51,52 +54,64 @@ await page.waitForTimeout(1600);
 check('2. botón Jugar → estado playing', (await readState()) === 'playing');
 check('2. HUD visible al empezar', !(await isHidden('hud')));
 check('2. retícula visible al empezar', !(await isHidden('reticle')));
+check('2. tirachinas en escena', await page.evaluate(() => window.__fractura.slingshot()));
+check('2. espejo de cristal preparado (refleja el tirachinas)', await page.evaluate(() => window.__fractura.mirrorReady()));
 await page.screenshot({ path: OUT + 'p2-jugando.png' });
 
 const d1 = (await readStats()).d;
-await page.waitForTimeout(2500);
+await page.waitForTimeout(5000);
 const d2 = (await readStats()).d;
 check('3. el mundo avanza (distancia crece)', d2 > d1 + 1, `${d1.toFixed(1)} m → ${d2.toFixed(1)} m`);
 
-// ------------------------------------------------- control de ratón (puntería por deltas)
-// El ratón arranca en (0,0), así que el primer movimiento "consume" ese salto
-// y satura la puntería en el borde; usamos el segundo movimiento (100 px a la
-// izquierda, sin límites en contra) para comprobar que la puntería responde.
-await page.mouse.move(480, 270);
+// ------------------------------------------------- toque preciso (sin arrastrar)
+const a0 = await readAim();
+await page.mouse.move(300, 320); // mover sin pulsar NO debe arrastrar la puntería
 await page.waitForTimeout(150);
-const aimBefore = await page.evaluate(() => window.__fractura.aim());
-await page.mouse.move(380, 270, { steps: 4 });
-await page.waitForTimeout(200);
-const aimAfter = await page.evaluate(() => window.__fractura.aim());
-check('4. mover el ratón mueve la puntería', aimAfter.tx < aimBefore.tx - 0.8,
-  `puntería x: ${aimBefore.tx.toFixed(2)} → ${aimAfter.tx.toFixed(2)}`);
+const aHover = await readAim();
+check('4. mover sin pulsar no arrastra la puntería', aHover.tx === a0.tx && aHover.ty === a0.ty,
+  `(${a0.tx.toFixed(2)}, ${a0.ty.toFixed(2)}) → (${aHover.tx.toFixed(2)}, ${aHover.ty.toFixed(2)})`);
 
-// ------------------------------------------------- disparar y romper
-// Apuntado determinista (hook de depuración) al eje central, donde pasan
-// anillos, paneles y columnas; el disparo en sí lo hace el ratón de verdad.
-const setAim = (x, y) => page.evaluate(([xx, yy]) => window.__fractura.setAim(xx, yy), [x, y]);
+const sBeforeTap = (await readStats()).shots;
+await page.mouse.move(620, 200);
+await page.mouse.down();
+await page.waitForTimeout(80);
+await page.mouse.up();
+await page.waitForTimeout(250);
+const aTap = await readAim();
+check('4. tocar un punto re-apunta el disparo a ese punto', aTap.tx !== a0.tx || aTap.ty !== a0.ty,
+  `(${a0.tx.toFixed(2)}, ${a0.ty.toFixed(2)}) → (${aTap.tx.toFixed(2)}, ${aTap.ty.toFixed(2)})`);
+const sAfterTap = (await readStats()).shots;
+check('4b. cada toque dispara una esfera', sAfterTap > sBeforeTap, `disparos ${sBeforeTap} → ${sAfterTap}`);
+
+// ------------------------------------------------- mantener pulsado (ráfaga)
+// Nota: en el entorno headless (SwiftShader) el juego va a ~1 fps y el
+// enfriamiento de disparo drena en tiempo de juego, así que esperamos de sobra.
+const s2 = sAfterTap;
+await page.mouse.down();
+await page.waitForTimeout(12000);
+await page.mouse.up();
+const s3 = (await readStats()).shots;
+check('5. mantener pulsado dispara en ráfaga', s3 - s2 >= 2, `disparos ${s2} → ${s3}`);
+
+// ------------------------------------------------- barrido para romper
 await setAim(0, 1.7);
-const a1 = (await readStats()).a;
+const g0 = (await readStats()).g;
 await page.mouse.down();
 let st = await readStats();
-for (let i = 0; i < 30 && st.a >= a1; i++) {
-  await page.waitForTimeout(400);
-  st = await readStats();
-}
-check('5. mantener pulsado dispara (la munición baja)', st.a < a1, `esferas ${a1} → ${st.a}`);
-
-// barrido por la zona central para romper obstáculos
 for (const [x, y] of [[1.2, 2.1], [1.5, 1.3], [0, 1.0], [-1.2, 2.1], [-1.5, 1.3], [0, 1.7]]) {
   await setAim(x, y);
-  await page.waitForTimeout(700);
+  await page.waitForTimeout(2500);
 }
 await page.mouse.up();
-for (let i = 0; i < 50 && st.s === 0 && st.b === 0; i++) {
+for (let i = 0; i < 40 && st.s === 0 && st.b === 0; i++) {
   await page.waitForTimeout(500);
   st = await readStats();
 }
 check('6. disparar rompe vidrio o da puntos', st.s > 0 || st.b > 0,
   `puntos ${st.s}, roturas ${st.b}, perfectos ${st.p}, esferas restantes ${st.a}`);
+const g1 = (await readStats()).g;
+check('6b. romper objetos otorga esferas (economía de munición)', g1 > g0, `esferas ganadas ${g0} → ${g1}`);
+check('6c. la munición nunca se hunde (recarga al romper)', st.a >= 0, `esferas actuales ${st.a}`);
 await page.screenshot({ path: OUT + 'p3-rompiendo.png' });
 
 // ---------------------------------------------------------------- pausa
@@ -113,6 +128,29 @@ await page.screenshot({ path: OUT + 'p4-pausa.png' });
 await page.mouse.click(120, 460); // tocar el fondo de "Toca para continuar"
 await page.waitForTimeout(700);
 check('8. tocar la pausa reanuda la partida', (await readState()) === 'playing' && (await isHidden('pause')));
+
+// ------------------------------------------------------------- ajustes
+await page.click('#btnSettings');
+await page.waitForTimeout(400);
+check('13. los ajustes se abren (y pausan)', !(await isHidden('settings')) && (await readState()) === 'paused');
+await page.$eval('#volMaster', (el) => { el.value = 40; el.dispatchEvent(new Event('input')); });
+await page.waitForTimeout(120);
+const gain = await page.evaluate(() => window.__fractura.audioGain());
+check('13. el deslizador de volumen cambia el volumen maestro', Math.abs(gain - 0.4) < 0.001, `ganancia ${gain}`);
+await page.click('#qualitySeg button[data-q="baja"]');
+await page.waitForTimeout(150);
+const pr = await page.evaluate(() => window.__fractura.pixelRatio());
+check('13. calidad baja reduce la resolución', pr <= 1.01, `pixelRatio ${pr}`);
+await page.evaluate(() => window.__fractura.setSafeMode(true));
+await page.waitForTimeout(150);
+check('13. modo seguro apaga el bloom', (await page.evaluate(() => window.__fractura.bloomOn())) === false);
+check('13. el modo seguro se refleja en el interruptor', await page.evaluate(() => document.getElementById('safeToggle').classList.contains('on')));
+await page.click('#btnCloseSettings');
+await page.waitForTimeout(300);
+check('13. los ajustes se cierran', await isHidden('settings'));
+await page.click('#btnResume');
+await page.waitForTimeout(400);
+check('13. se puede reanudar tras cerrar ajustes', (await readState()) === 'playing');
 
 // ---------------------------------------------------------------- game over
 for (let i = 0; i < 4; i++) {

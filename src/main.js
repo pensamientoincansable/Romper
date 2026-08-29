@@ -1,7 +1,9 @@
 // ============================================================================
 // FRACTURA — juego minimalista de romper cristales
 // Motor: three.js · 100% procedural (geometría, texturas, audio, UI)
-// Estructura: corredor infinito · esferas metálicas · cristal de colores
+// Estructura: corredor infinito · tirachinas con esferas metálicas · cristal
+//              en espejos que reflejan el tirachinas · ajustes de volumen y
+//              calidad · modo seguro para fotosensibilidad (epilepsia)
 // ============================================================================
 
 import * as THREE from 'three';
@@ -59,8 +61,11 @@ const TUNNEL_HALF = 3.8;          // semi-ancho del corredor
 const SX = TUNNEL_HALF / 3;       // factor de escala lateral de los patrones
 const CAM_HEIGHT = 1.62;
 const AIM_DIST = 55;               // profundidad del plano de puntería
-const BALL_SPEED = 115;            // m/s de la esfera
-const FIRE_COOLDOWN = 0.30;
+const GRAVITY = 15;                // m/s² — la esfera cae poco a poco (arco tipo Smash Hit)
+const BALL_H_SPEED = 78;           // velocidad horizontal media de lanzamiento
+const FIRE_COOLDOWN = 0.16;        // cadencia del tirachinas
+const SLING_Y = -0.58;             // posición del tirachinas (respecto a la cámara)
+const SLING_Z = -0.95;
 const SEG_LEN = 80;                // longitud de cada segmento de entorno
 const SEG_COUNT = 12;
 const THEME_EVERY = 320;           // metros por cambio de paleta
@@ -76,13 +81,145 @@ const el = {
   score: $('scoreVal'), combo: $('comboVal'), ammoReadout: $('ammoReadout'),
   ammoDots: $('ammoDots'), hearts: $('heartsRow'), dist: $('distReadout'),
   title: $('title'), gameover: $('gameover'), pause: $('pause'),
+  settings: $('settings'), qualitySeg: $('qualitySeg'), safeToggle: $('safeToggle'),
+  volMaster: $('volMaster'), volMusic: $('volMusic'), volSfx: $('volSfx'),
+  volMasterVal: $('volMasterVal'), volMusicVal: $('volMusicVal'), volSfxVal: $('volSfxVal'),
   btnStart: $('btnStart'), btnRetry: $('btnRetry'), btnMenu: $('btnMenu'),
   btnResume: $('btnResume'), btnPause: $('btnPause'), btnMute: $('btnMute'),
+  btnSettings: $('btnSettings'), btnSettingsPause: $('btnSettingsPause'),
+  btnSettingsTitle: $('btnSettingsTitle'), btnSafeTitle: $('btnSafeTitle'),
+  btnCloseSettings: $('btnCloseSettings'),
   flash: $('flash'), banner: $('banner'), bannerSub: $('bannerSub'),
   bannerWrap: $('bannerWrap'), statScore: $('statScore'), statDist: $('statDist'),
   statBreak: $('statBreak'), statPerf: $('statPerf'), bestTitle: $('bestTitle'),
   goReason: $('goReason'), webglError: $('webglError'), uiBtns: $('uiBtns'),
 };
+
+// ---------------------------------------------------------------------------
+// Ajustes (volumen, calidad, modo seguro) — persistidos en localStorage
+// ---------------------------------------------------------------------------
+const DEFAULT_SETTINGS = { masterVol: 0.9, musicVol: 0.5, sfxVol: 1.0, quality: 'media', safeMode: true };
+let settings = { ...DEFAULT_SETTINGS };
+try {
+  const raw = safeStorageGet('fractura_settings', '');
+  if (raw) Object.assign(settings, JSON.parse(raw));
+} catch (err) {
+  console.warn('[settings] no se pudieron leer los ajustes:', err);
+}
+
+function saveSettings() {
+  safeStorageSet('fractura_settings', JSON.stringify(settings));
+}
+
+// Límites de efectos según calidad y modo seguro (epilepsia)
+function fxCaps() {
+  const safe = settings.safeMode;
+  const q = settings.quality;
+  const shardBase = q === 'alta' ? 850 : q === 'media' ? 520 : 300;
+  const sparkBase = q === 'alta' ? 260 : q === 'media' ? 170 : 100;
+  return {
+    shards: safe ? Math.min(shardBase, 14) : shardBase,
+    sparks: safe ? Math.min(sparkBase, 7) : sparkBase,
+    bloom: !safe && q !== 'baja',
+    bloomStrength: q === 'alta' ? 0.5 : 0.3,
+    pixelRatio: q === 'alta' ? Math.min(window.devicePixelRatio || 1, 2)
+      : q === 'media' ? Math.min(window.devicePixelRatio || 1, 1.5)
+      : 1,
+    stars: q !== 'baja' ? 0.55 : 0.28,
+  };
+}
+
+function applyQuality(q) {
+  settings.quality = q;
+  const caps = fxCaps();
+  try { renderer.setPixelRatio(caps.pixelRatio); } catch (err) { /* sin importancia */ }
+  try { renderer.setSize(window.innerWidth, window.innerHeight); } catch (err) { /* sin importancia */ }
+  if (composer) {
+    try { composer.setPixelRatio(caps.pixelRatio); } catch (err) { /* sin importancia */ }
+    try { composer.setSize(window.innerWidth, window.innerHeight); } catch (err) { /* sin importancia */ }
+  }
+  if (bloom) {
+    bloom.enabled = caps.bloom;
+    bloom.strength = caps.bloomStrength;
+  }
+  stars.material.opacity = caps.stars;
+  syncQualityUI();
+}
+
+function applySafeMode(safe) {
+  settings.safeMode = safe;
+  if (bloom) bloom.enabled = fxCaps().bloom;
+  syncSafeUI();
+}
+
+function applySettings() {
+  safeAudio('setMasterVolume', settings.masterVol);
+  safeAudio('setMusicVolume', settings.musicVol);
+  safeAudio('setSfxVolume', settings.sfxVol);
+  applyQuality(settings.quality);
+  applySafeMode(settings.safeMode);
+  syncSettingsUI();
+}
+
+function syncSettingsUI() {
+  const pairs = [['volMaster', 'volMasterVal', 'masterVol'], ['volMusic', 'volMusicVal', 'musicVol'], ['volSfx', 'volSfxVal', 'sfxVol']];
+  for (const [id, vid, key] of pairs) {
+    const inp = $(id);
+    if (!inp) continue;
+    inp.value = Math.round(settings[key] * 100);
+    const out = $(vid);
+    if (out) out.textContent = inp.value;
+  }
+  syncQualityUI();
+  syncSafeUI();
+}
+
+function syncQualityUI() {
+  if (!el.qualitySeg) return;
+  el.qualitySeg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.q === settings.quality));
+}
+
+function syncSafeUI() {
+  if (el.safeToggle) el.safeToggle.classList.toggle('on', settings.safeMode);
+  if (el.btnSafeTitle) el.btnSafeTitle.textContent = settings.safeMode ? '♿ Seguro: ON' : '♿ Seguro: OFF';
+}
+
+function openSettings() {
+  if (state === 'playing') pauseGame();
+  el.settings.classList.remove('hidden');
+}
+
+function closeSettings() {
+  el.settings.classList.add('hidden');
+}
+
+function wireSettingsUI() {
+  const pairs = [
+    ['volMaster', 'volMasterVal', 'masterVol', 'setMasterVolume'],
+    ['volMusic', 'volMusicVal', 'musicVol', 'setMusicVolume'],
+    ['volSfx', 'volSfxVal', 'sfxVol', 'setSfxVolume'],
+  ];
+  for (const [id, vid, key, fn] of pairs) {
+    const inp = $(id);
+    if (!inp) continue;
+    inp.addEventListener('input', () => {
+      settings[key] = inp.value / 100;
+      const out = $(vid);
+      if (out) out.textContent = inp.value;
+      saveSettings();
+      safeAudio(fn, settings[key]);
+    });
+  }
+  el.qualitySeg?.querySelectorAll('button').forEach((b) => {
+    b.addEventListener('click', () => { applyQuality(b.dataset.q); saveSettings(); });
+  });
+  el.safeToggle?.addEventListener('click', () => { applySafeMode(!settings.safeMode); saveSettings(); });
+  el.btnSafeTitle?.addEventListener('click', () => { applySafeMode(!settings.safeMode); saveSettings(); });
+  el.btnSettings?.addEventListener('click', openSettings);
+  el.btnSettingsPause?.addEventListener('click', openSettings);
+  el.btnSettingsTitle?.addEventListener('click', openSettings);
+  el.btnCloseSettings?.addEventListener('click', closeSettings);
+}
 
 // La lógica de lanzamiento de los botones (Jugar / Reintentar) vive en la
 // sección "Entrada", donde se declara SKIP_METERS. (Antes había aquí una
@@ -400,6 +537,100 @@ const GEO = {
 };
 
 // ---------------------------------------------------------------------------
+// Tirachinas (modelo procedural) + espejos que reflejan el tirachinas
+// ---------------------------------------------------------------------------
+function buildSlingshotModel() {
+  const g = new THREE.Group();
+  const dark = new THREE.MeshStandardMaterial({ color: 0x39435a, metalness: 0.8, roughness: 0.4, envMapIntensity: 1.3 });
+  const chrome = new THREE.MeshStandardMaterial({ color: 0xcfe0f2, metalness: 1.0, roughness: 0.18, envMapIntensity: 2 });
+  // mango
+  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.042, 0.34, 10), dark);
+  handle.position.set(0, -0.30, 0.10);
+  handle.rotation.x = 0.5;
+  // horquilla
+  const armGeo = new THREE.CylinderGeometry(0.02, 0.028, 0.40, 8);
+  const armL = new THREE.Mesh(armGeo, dark);
+  armL.position.set(-0.14, 0.04, -0.02);
+  armL.rotation.set(-0.12, 0, 0.55);
+  const armR = armL.clone();
+  armR.position.x = 0.14;
+  armR.rotation.z = -0.55;
+  // puntas
+  const tipL = new THREE.Mesh(new THREE.SphereGeometry(0.03, 8, 6), chrome);
+  tipL.position.set(-0.185, 0.21, -0.05);
+  const tipR = tipL.clone();
+  tipR.position.x = 0.185;
+  // cuero con la esfera cargada
+  const pocket = new THREE.Group();
+  pocket.position.set(0, 0.16, 0.16);
+  const ballMesh = new THREE.Mesh(GEO.ball, metalMat);
+  ballMesh.scale.setScalar(1.15);
+  pocket.add(ballMesh);
+  // gomas elásticas
+  const bandMat = new THREE.MeshBasicMaterial({ color: 0x6b5330 });
+  const bandGeo = new THREE.BoxGeometry(0.016, 0.016, 1);
+  const bandL = new THREE.Mesh(bandGeo, bandMat);
+  const bandR = new THREE.Mesh(bandGeo, bandMat);
+  g.add(handle, armL, armR, tipL, tipR, pocket, bandL, bandR);
+  g.userData = { pocket, bandL, bandR, tipL, tipR, ball: ballMesh, charge: 0, snap: 0 };
+  return g;
+}
+
+const slingshot = buildSlingshotModel();
+slingshot.scale.setScalar(0.95);
+slingshot.position.set(0, SLING_Y, SLING_Z);
+scene.add(camera);
+camera.add(slingshot);
+const slingWorldPos = new THREE.Vector3();
+slingshot.getWorldPosition(slingWorldPos); // posición inicial válida para el primer disparo
+const _vA = new THREE.Vector3();
+const _vB = new THREE.Vector3();
+const _vC = new THREE.Vector3();
+const _unitZ = new THREE.Vector3(0, 0, 1);
+
+// Cubemap de espejo: escena diminuta con el tirachinas, usada como reflejo de
+// los cristales. Se genera una vez; los cristales son espejos pulidos que
+// reflejan el tirachinas con el que lanzas las esferas.
+function buildMirrorTexture() {
+  const rt = new THREE.WebGLCubeRenderTarget(128);
+  const cubeCam = new THREE.CubeCamera(0.1, 80, rt);
+  const s = new THREE.Scene();
+  s.background = new THREE.Color(0x0a1120);
+  s.add(new THREE.HemisphereLight(0xcfe9ff, 0x141d30, 0.9));
+  const key = new THREE.DirectionalLight(0xffffff, 1.8);
+  key.position.set(4, 8, 6);
+  s.add(key);
+  const rim = new THREE.DirectionalLight(0xff77ee, 0.6);
+  rim.position.set(-5, 3, -4);
+  s.add(rim);
+  const sl = buildSlingshotModel();
+  sl.position.set(0, -0.75, 2.3);
+  s.add(sl);
+  const floor = new THREE.Mesh(
+    new THREE.PlaneGeometry(7, 7),
+    new THREE.MeshStandardMaterial({ color: 0x182238, roughness: 0.55, metalness: 0.4 })
+  );
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.y = -1.7;
+  s.add(floor);
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTex, color: 0x6fd7ff, transparent: true, opacity: 0.5,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  }));
+  halo.scale.set(5, 5, 1);
+  halo.position.set(0, 0.4, 2.4);
+  s.add(halo);
+  s.add(cubeCam);
+  cubeCam.update(renderer, s);
+  return rt.texture;
+}
+const mirrorTex = buildMirrorTexture();
+const mirrorMat = new THREE.MeshStandardMaterial({
+  color: 0x14181f, metalness: 1.0, roughness: 0.04,
+  envMap: mirrorTex, envMapIntensity: 2.4, side: THREE.DoubleSide,
+});
+
+// ---------------------------------------------------------------------------
 // Sistema de esquirlas (InstancedMesh)
 // ---------------------------------------------------------------------------
 class ShardSystem {
@@ -565,23 +796,44 @@ function cleanupObstacle(o) {
   if (idx >= 0) obstacles.splice(idx, 1);
 }
 
-function destroyObstacle(o, power = 1) {
-  const p = o.mesh.position.clone();
-  const color = o.tint || (theme && theme.glass) || 0xa8e8ff;
-  shards.burst(p.x, p.y, p.z, color, o.type === 'ring' || o.type === 'ringBig' ? 34 : 26, power);
-  sparks.burst(p.x, p.y, p.z, theme.accent, 10, power);
+function breakObstacle(o, hitPoint, byBall, power = 1) {
+  const p = (hitPoint || o.mesh.position).clone();
+  const caps = fxCaps();
+  const color = o.mirror ? theme.accent2 : (o.tint || theme.glass);
+  shards.burst(p.x, p.y, p.z, color, Math.min(o.type === 'ring' || o.type === 'ringBig' ? 30 : 22, caps.shards), power);
+  sparks.burst(p.x, p.y, p.z, theme.accent, Math.min(9, caps.sparks), power);
   safeAudio('shatter', power);
+  if (byBall) {
+    const sc = o.score || 10;
+    addScore(sc, p.x, p.y, p.z);
+    breaks++;
+    // economía de munición: cuanto más pequeño/difícil el objetivo, más esferas devuelve
+    if ((o.reward || 1) > 0 && state === 'playing') grantBalls(o.reward || 1, p.x, p.y, p.z);
+  }
+  if (o.type === 'shelf') dropPickupsFromShelf(o);
   cleanupObstacle(o);
 }
 
+// Añade esferas al cargador (las suficientes para seguir rompiendo)
+function grantBalls(n, x, y, z) {
+  ammo = Math.min(maxAmmo, ammo + n);
+  ammoGainedTotal += n;
+  updateAmmoUI();
+  popup('+' + n + ' ⬤', x, y, z, 'ammo');
+}
+
 // --- tipos de obstáculo ---
+// sizeScale (dificultad) encoge poco a poco los objetivos a medida que avanzas;
+// el reparto de esferas crece al encogerse el objetivo (más difícil de acertar).
 function makePanel(x, y, z, sx = 1) {
+  const s = Math.max(0.3, sx * sizeScale);
   const mesh = new THREE.Mesh(GEO.panelSmall, glassMat);
-  mesh.scale.set(sx, sx, 1);
+  mesh.scale.set(s, s, 1);
   mesh.position.set(x, y, z);
   mesh.rotation.y = rand(-0.06, 0.06);
   scene.add(mesh);
-  const o = obstacleData('panel', mesh, { half: { x: 0.75 * sx, y: 0.75 * sx, z: 0.06 }, score: 15 });
+  const o = obstacleData('panel', mesh, { half: { x: 0.75 * s, y: 0.75 * s, z: 0.06 }, score: 15 });
+  o.reward = Math.max(2, Math.round(2.8 / s));
   obstacles.push(o);
   return o;
 }
@@ -594,6 +846,7 @@ function makeRing(x, y, z, big = false) {
   const o = obstacleData('ring', mesh, {
     radius: R, tube, openR: R - tube, score: big ? 150 : 60, big,
   });
+  o.reward = big ? 3 : 4;
   obstacles.push(o);
   return o;
 }
@@ -603,17 +856,21 @@ function makeColumn(x, z) {
   mesh.position.set(x, 1.8, z);
   scene.add(mesh);
   const o = obstacleData('column', mesh, { radius: 0.26, halfH: 1.8, score: 30 });
+  o.reward = 4;
   obstacles.push(o);
   return o;
 }
 
 function makeCrystal(x, y, z, s = 1) {
-  const mesh = new THREE.Mesh(GEO.crystal, glassMat);
+  const sc = Math.max(0.3, s * sizeScale);
+  const mesh = new THREE.Mesh(GEO.crystal, mirrorMat); // espejo: refleja el tirachinas
   mesh.position.set(x, y, z);
-  mesh.scale.setScalar(s);
+  mesh.scale.setScalar(sc);
   mesh.rotation.set(rand(0, 6.28), rand(0, 6.28), rand(0, 6.28));
   scene.add(mesh);
-  const o = obstacleData('crystal', mesh, { radius: 0.3 * s, score: 35 });
+  const o = obstacleData('crystal', mesh, { radius: 0.3 * sc, score: 35 });
+  o.reward = Math.max(2, Math.round(2.8 / sc));
+  o.mirror = true;
   obstacles.push(o);
   return o;
 }
@@ -623,6 +880,7 @@ function makeShelf(x, y, z) {
   mesh.position.set(x, y, z);
   scene.add(mesh);
   const o = obstacleData('shelf', mesh, { half: { x: 1.15, y: 0.08, z: 0.27 }, score: 10 });
+  o.reward = 1;
   obstacles.push(o);
   // esferas de munición encima de la repisa
   const n = randInt(6, 9);
@@ -656,6 +914,9 @@ function dropPickupsFromShelf(o) {
 // ---------------------------------------------------------------------------
 let spawnCursor = -60;
 let rng = Math.random;
+// Progresión: los objetivos se encogen muy poco a poco con la distancia y la
+// velocidad de avance aumenta; el reparto de esferas compensa la dificultad.
+let sizeScale = 1;
 
 const PATTERNS = [
   { w: 6, build: (z, R) => { // muro de cristal
@@ -710,6 +971,9 @@ const PATTERNS = [
 function spawnChamber() {
   const R = Math.random;
   const z = spawnCursor;
+  // dificultad según la distancia (objetivos más pequeños, algo más densos)
+  const diff = clamp((gameDist + -z) / 1800, 0, 1);
+  sizeScale = 1 - 0.22 * diff;
   // peso: evita repetir el mismo patrón dos veces seguidas
   const pool = lastPattern >= 0
     ? PATTERNS.filter((_, i) => i !== lastPattern)
@@ -720,7 +984,7 @@ function spawnChamber() {
   for (const p of pool) { t -= p.w; if (t <= 0) { chosen = p; break; } }
   lastPattern = PATTERNS.indexOf(chosen);
   chosen.build(z, R);
-  spawnCursor = z - rand(16, 26);
+  spawnCursor = z - rand(16, 26 - 4 * diff);
 }
 
 let lastPattern = -1;
@@ -731,39 +995,125 @@ function updateSpawner() {
 }
 
 // ---------------------------------------------------------------------------
-// Esferas del jugador
+// Tirachinas: lanzamiento balístico (la esfera cae poco a poco, como Smash Hit)
 // ---------------------------------------------------------------------------
 const aim = { x: 0, y: 1.7 };
 const aimTarget = { x: 0, y: 1.7 };
 const camBase = new THREE.Vector3(0, CAM_HEIGHT, 0);
-let recoil = 0;
 let fireCooldown = 0;
+let shotsFired = 0;
+let ammoGainedTotal = 0;
+const lastAimPoint = new THREE.Vector3(0, 1.7, -AIM_DIST); // último punto tocado
 
-function fireBall() {
+const ARC_PTS = 24; // puntos de la estela / arco previo
+
+// Calcula la velocidad inicial para que la esfera alcance `target` con un arco
+// parabólico, compensando el avance del mundo (los objetivos se acercan).
+function computeBallistic(origin, target) {
+  let effZ = target.z;
+  let T = 0.5;
+  for (let it = 0; it < 2; it++) {
+    const d = Math.hypot(target.x - origin.x, effZ - origin.z);
+    T = Math.max(0.32, d / BALL_H_SPEED);
+    effZ = target.z + Math.min(currentSpeed * T, 26);
+  }
+  const dx = target.x - origin.x;
+  const dy = target.y - origin.y;
+  const dz = effZ - origin.z;
+  const v = new THREE.Vector3(dx / T, dy / T + 0.5 * GRAVITY * T, dz / T);
+  return { v, T, landZ: effZ };
+}
+
+function pushTrail(b) {
+  const t = b.trail;
+  const p = b.mesh.position;
+  if (t.n < ARC_PTS) t.n++;
+  for (let i = t.n - 1; i > 0; i--) {
+    t.pts[i * 3] = t.pts[(i - 1) * 3];
+    t.pts[i * 3 + 1] = t.pts[(i - 1) * 3 + 1];
+    t.pts[i * 3 + 2] = t.pts[(i - 1) * 3 + 2];
+  }
+  t.pts[0] = p.x; t.pts[1] = p.y; t.pts[2] = p.z;
+  t.geo.attributes.position.needsUpdate = true;
+  t.geo.setDrawRange(0, t.n);
+  t.line.material.opacity = 0.12 + 0.32 * (t.n / ARC_PTS);
+}
+
+function disposeTrail(b) {
+  scene.remove(b.trail.line);
+  b.trail.line.geometry.dispose();
+  b.trail.line.material.dispose();
+}
+
+function launchBall(targetX, targetY, targetZ) {
   if (state !== 'playing' || ammo <= 0 || fireCooldown > 0) {
     if (ammo <= 0 && state === 'playing') safeAudio('click');
-    return;
+    return false;
   }
   fireCooldown = FIRE_COOLDOWN;
   ammo--;
+  shotsFired++;
   updateAmmoUI();
   safeAudio('shoot');
-  recoil = 1;
+  safeAudio('twang');
 
-  const origin = camBase.clone().add(new THREE.Vector3(0, -0.08, 0.3));
-  const target = new THREE.Vector3(aim.x, aim.y, camera.position.z - AIM_DIST);
-  const dir = target.sub(origin).normalize();
+  const origin = slingWorldPos.clone();
+  const target = new THREE.Vector3(targetX, targetY, targetZ);
+  const { v } = computeBallistic(origin, target);
   const mesh = new THREE.Mesh(GEO.ball, metalMat);
   mesh.position.copy(origin);
   const halo = new THREE.Sprite(haloMat);
-  halo.scale.set(1.05, 1.05, 1);
+  halo.scale.set(0.9, 0.9, 1);
   mesh.add(halo);
   scene.add(mesh);
+
+  const trailPts = new Float32Array(ARC_PTS * 3);
+  const trailGeo = new THREE.BufferGeometry();
+  trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPts, 3));
+  trailGeo.setDrawRange(0, 0);
+  const trailLine = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({
+    color: 0xbfe8ff, transparent: true, opacity: 0.4,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  }));
+  trailLine.frustumCulled = false;
+  scene.add(trailLine);
   balls.push({
-    mesh, vel: dir.multiplyScalar(BALL_SPEED), grazed: 0,
-    bouncesX: 0, bouncesY: 0, life: 6, trailT: 0,
+    mesh, vel: v, grazed: 0,
+    bouncesX: 0, bouncesY: 0, life: 4, trailT: 0,
+    trail: { pts: trailPts, geo: trailGeo, line: trailLine, n: 0 },
   });
-  cameraBaseRecoil = 0.045;
+
+  // el tirachinas suelta la goma
+  const sl = slingshot.userData;
+  sl.snap = 1;
+  sl.charge = 0.35;
+  return true;
+}
+
+// Arco previo (guía tenue de dónde caerá la esfera)
+const ghostGeo = new THREE.BufferGeometry();
+const ghostPts = new Float32Array(ARC_PTS * 3);
+ghostGeo.setAttribute('position', new THREE.BufferAttribute(ghostPts, 3));
+ghostGeo.setDrawRange(0, 0);
+const ghostLine = new THREE.Line(ghostGeo, new THREE.LineBasicMaterial({
+  color: 0x9fd8ff, transparent: true, opacity: 0.28,
+  blending: THREE.AdditiveBlending, depthWrite: false,
+}));
+ghostLine.frustumCulled = false;
+scene.add(ghostLine);
+
+function updateGhostArc(origin, target) {
+  const { v, T } = computeBallistic(origin, target);
+  const p = origin;
+  for (let i = 0; i < ARC_PTS; i++) {
+    const t = (i / (ARC_PTS - 1)) * T;
+    ghostPts[i * 3] = p.x + v.x * t;
+    ghostPts[i * 3 + 1] = p.y + v.y * t - 0.5 * GRAVITY * t * t;
+    ghostPts[i * 3 + 2] = p.z + v.z * t;
+  }
+  ghostGeo.attributes.position.needsUpdate = true;
+  ghostGeo.setDrawRange(0, ARC_PTS);
+  ghostLine.visible = state === 'playing';
 }
 
 // ---------------------------------------------------------------------------
@@ -844,10 +1194,17 @@ function damageHit(o) {
   combo = 0;
   updateHeartsUI();
   safeAudio('damage');
-  el.flash.classList.remove('hit'); void el.flash.offsetWidth; el.flash.classList.add('hit');
-  hitStop = 0.55;
-  timeScale = 0.35;
-  popup('− 1', 0, 1.2, 0, '#ff5c8a');
+  if (settings.safeMode) {
+    // modo seguro: sin destello estroboscópico, solo un pulso suave y lento
+    el.flash.classList.remove('safePulse'); void el.flash.offsetWidth; el.flash.classList.add('safePulse');
+    hitStop = 0.28;
+    timeScale = 0.65;
+  } else {
+    el.flash.classList.remove('hit'); void el.flash.offsetWidth; el.flash.classList.add('hit');
+    hitStop = 0.55;
+    timeScale = 0.35;
+  }
+  popup('− 1', 0, 1.2, 0);
   if (hearts <= 0) gameOverRun();
 }
 
@@ -867,14 +1224,14 @@ function addScore(n, x, y, z, label) {
   popup(label || `+${v}`, x, y, z);
 }
 
-function popup(text, x, y, z, color) {
+function popup(text, x, y, z, cls) {
   const v = new THREE.Vector3(x, y, z || 0);
   v.project(camera);
   const sx = (v.x * 0.5 + 0.5) * window.innerWidth;
   const sy = (-v.y * 0.5 + 0.5) * window.innerHeight;
   if (sx < -60 || sx > window.innerWidth + 60 || sy < -60 || sy > window.innerHeight + 60) return;
   const d = document.createElement('div');
-  d.className = 'popup' + (color ? ' gold' : '');
+  d.className = 'popup' + (cls ? ' ' + cls : '');
   d.textContent = text;
   d.style.left = sx + 'px';
   d.style.top = sy + 'px';
@@ -976,7 +1333,6 @@ let currentSpeed = 8;
 let timeScale = 1;
 let hitStop = 0;
 let lastT = performance.now();
-let cameraBaseRecoil = 0;
 let elapsed = 0;
 let hintTimer = 0;
 
@@ -991,8 +1347,13 @@ function startGame(skipMeters = 0) {
   gameDist = skipMeters;
   hearts = 4; ammo = 18;
   timeScale = 1; hitStop = 0;
-  recoil = 0; fireCooldown = 0;
+  fireCooldown = 0;
   pointerDown = false; spaceHeld = false;
+  hoverScreen = null;
+  lastAimPoint.set(0, 1.7, camera.position.z - AIM_DIST);
+  aim.x = aimTarget.x = 0; aim.y = aimTarget.y = 1.7;
+  slingshot.userData.charge = 0;
+  slingshot.userData.snap = 0;
   bannerTimer = 0;
   el.bannerWrap.classList.remove('show');
   lastPattern = -1;
@@ -1023,6 +1384,7 @@ function endToMenu() {
   baseSpeed = 8;
   pointerDown = false;
   spaceHeld = false;
+  hoverScreen = null;
   for (const o of [...obstacles]) cleanupObstacle(o);
   for (const pu of [...pickups]) { scene.remove(pu.mesh); }
   pickups.length = 0;
@@ -1075,26 +1437,83 @@ function resumeGame() {
 }
 
 // ---------------------------------------------------------------------------
-// Entrada
+// Entrada — toque/click preciso (tirachinas): se dispara exactamente al punto
+// pulsado, sin arrastrar para apuntar. Mantener pulsado repite el disparo.
 // ---------------------------------------------------------------------------
 let pointerDown = false;
-let lastPointer = { x: 0, y: 0 };
+let hoverScreen = null; // puntero sin pulsar (para la guía del arco)
+const tapRay = new THREE.Raycaster();
+const _ndc = new THREE.Vector2();
+
+function screenRayPoint(clientX, clientY, zPlane) {
+  _ndc.x = (clientX / window.innerWidth) * 2 - 1;
+  _ndc.y = -(clientY / window.innerHeight) * 2 + 1;
+  tapRay.setFromCamera(_ndc, camera);
+  const t = (zPlane - tapRay.ray.origin.z) / tapRay.ray.direction.z;
+  if (!isFinite(t)) return null;
+  return tapRay.ray.origin.clone().addScaledVector(tapRay.ray.direction, t);
+}
+
+// El punto exacto al que se dispara: si el rayo toca un obstáculo se apunta a
+// él (precisión a cualquier profundidad); si no, al plano de puntería.
+function pickTargetPoint(clientX, clientY) {
+  _ndc.x = (clientX / window.innerWidth) * 2 - 1;
+  _ndc.y = -(clientY / window.innerHeight) * 2 + 1;
+  tapRay.setFromCamera(_ndc, camera);
+  const r = tapRay.ray;
+  let best = null;
+  let bestT = Infinity;
+  for (const o of obstacles) {
+    const c = o.mesh.position;
+    if (c.z < camera.position.z - AIM_DIST - 25) continue;
+    if (o.type === 'ring' || o.type === 'ringBig') {
+      const tPlane = (c.z - r.origin.z) / r.direction.z;
+      if (tPlane < 0 || tPlane > bestT) continue;
+      const px = r.origin.x + r.direction.x * tPlane;
+      const py = r.origin.y + r.direction.y * tPlane;
+      const d = Math.hypot(px - c.x, py - c.y);
+      const R = o.radius || 1;
+      const tube = o.tube || 0.22;
+      if (Math.abs(d - R) < tube * 1.6 + 0.22) { bestT = tPlane; best = c; }
+      continue;
+    }
+    const t = r.closestPointToPoint(c, _vA);
+    const cp = r.at(t, _vB);
+    const rad = (o.radius || (o.half ? Math.max(o.half.x, o.half.y) : 0.3)) * 1.25 + 0.18;
+    if (t > 0 && t < bestT && cp.distanceTo(c) < rad) { bestT = t; best = c.clone(); }
+  }
+  if (best) return best;
+  const p = screenRayPoint(clientX, clientY, camera.position.z - AIM_DIST);
+  if (!p) return null;
+  p.x = clamp(p.x, -TUNNEL_HALF + 0.2, TUNNEL_HALF - 0.2);
+  p.y = clamp(p.y, 0.35, 4.4);
+  return p;
+}
+
+function aimAtPoint(p) {
+  aim.x = p.x; aim.y = p.y;
+  aimTarget.x = p.x; aimTarget.y = p.y;
+  lastAimPoint.set(p.x, p.y, p.z);
+}
 
 function onPointerDown(e) {
   if (state !== 'playing') return;
-  if (e.target.closest('button, #uiBtns, .overlay')) return;
+  if (e.target.closest('button, #uiBtns, .overlay, input, .seg')) return;
   e.preventDefault();
   pointerDown = true;
-  lastPointer = { x: e.clientX, y: e.clientY };
-  fireBall();
+  hoverScreen = { x: e.clientX, y: e.clientY };
+  const p = pickTargetPoint(e.clientX, e.clientY);
+  if (p) aimAtPoint(p);
+  launchBall(lastAimPoint.x, lastAimPoint.y, lastAimPoint.z);
 }
 function onPointerMove(e) {
   if (state !== 'playing') return;
-  const dx = e.clientX - lastPointer.x;
-  const dy = e.clientY - lastPointer.y;
-  lastPointer = { x: e.clientX, y: e.clientY };
-  aimTarget.x = clamp(aimTarget.x + dx * 0.012, -TUNNEL_HALF + 0.25, TUNNEL_HALF - 0.25);
-  aimTarget.y = clamp(aimTarget.y - dy * 0.012, 0.7, 3.5);
+  hoverScreen = { x: e.clientX, y: e.clientY };
+  if (pointerDown) {
+    // manteniendo pulsado, la puntería sigue al dedo y sigue disparando
+    const p = pickTargetPoint(e.clientX, e.clientY);
+    if (p) aimAtPoint(p);
+  }
 }
 function onPointerUp() { pointerDown = false; }
 
@@ -1147,7 +1566,7 @@ document.addEventListener('visibilitychange', () => {
 // ---------------------------------------------------------------------------
 function updateWorld(dt) {
   currentSpeed = damp(currentSpeed, baseSpeed, 1.2, dt);
-  baseSpeed = state === 'playing' ? Math.min(42, 27 + gameDist * 0.0022) : 8;
+  baseSpeed = state === 'playing' ? Math.min(46, 26 + gameDist * 0.0036) : 8;
   const dz = currentSpeed * dt;
   gameDist += dz;
   spawnCursor += dz; // el mundo avanza; el cursor de generación también
@@ -1159,25 +1578,59 @@ function updateWorld(dt) {
   camBase.x = damp(camBase.x, swayX, 4, dt);
   camBase.y = damp(camBase.y, swayY, 4, dt);
   camera.position.set(camBase.x, camBase.y, 0);
-  camera.rotation.z = Math.sin(elapsed * 0.6) * 0.012 - recoil * 0.03;
+  camera.rotation.z = Math.sin(elapsed * 0.6) * 0.012;
 
   // puntería suavizada
   aim.x = damp(aim.x, aimTarget.x, 13, dt);
   aim.y = damp(aim.y, aimTarget.y, 13, dt);
 
-  // retroceso
-  recoil = Math.max(0, recoil - dt * 5);
-  cameraBaseRecoil = Math.max(0, cameraBaseRecoil - dt * 0.4);
-  camera.position.y += cameraBaseRecoil;
+  // --- tirachinas: orientación, goma elástica y balín cargado ---
+  slingshot.getWorldPosition(slingWorldPos);
 
-  // disparo
+  // disparo (tirachinas): al mantener pulsado repite hacia el último punto
   fireCooldown = Math.max(0, fireCooldown - dt);
-  if (pointerDown || spaceHeld) fireBall();
+  if (pointerDown || spaceHeld) launchBall(lastAimPoint.x, lastAimPoint.y, lastAimPoint.z);
+  {
+    const sl = slingshot.userData;
+    const ax = lastAimPoint.x - slingWorldPos.x;
+    const ay = lastAimPoint.y - slingWorldPos.y;
+    const az = lastAimPoint.z - slingWorldPos.z;
+    const yaw = Math.atan2(ax, -az);
+    const horiz = Math.hypot(ax, az);
+    const pitch = Math.atan2(ay, horiz);
+    slingshot.rotation.y = damp(slingshot.rotation.y, clamp(yaw, -0.6, 0.6), 16, dt);
+    slingshot.rotation.x = damp(slingshot.rotation.x, clamp(-pitch, -0.45, 0.4), 16, dt);
+    sl.charge = pointerDown ? Math.min(1, sl.charge + dt * 7) : Math.max(0, sl.charge - dt * 5);
+    sl.snap = Math.max(0, sl.snap - dt * 6);
+    const pull = sl.charge * (1 - sl.snap * 0.5);
+    sl.pocket.position.z = 0.16 + pull * 0.22 - sl.snap * 0.05;
+    sl.pocket.position.y = 0.16 + sl.snap * 0.03;
+    for (const [tip, band] of [[sl.tipL, sl.bandL], [sl.tipR, sl.bandR]]) {
+      const a = tip.position;
+      const b = sl.pocket.position;
+      band.position.copy(a).add(b).multiplyScalar(0.5);
+      band.scale.z = a.distanceTo(b);
+      // orientar en espacio local (el grupo puede estar rotado hacia el objetivo)
+      _vC.copy(b).sub(a).normalize();
+      band.quaternion.setFromUnitVectors(_unitZ, _vC);
+    }
+    const idle = 1 + Math.sin(elapsed * 2.2) * 0.012;
+    slingshot.scale.setScalar(0.95 * idle);
+  }
+
+  // --- guía del arco (dónde caerá la próxima esfera) ---
+  let ghostTarget = lastAimPoint;
+  if (!pointerDown && hoverScreen) {
+    const hp = pickTargetPoint(hoverScreen.x, hoverScreen.y);
+    if (hp) ghostTarget = hp;
+  }
+  updateGhostArc(slingWorldPos, ghostTarget);
 
   // mover esferas del jugador (substeps para no atravesar cristales finos)
   for (let i = balls.length - 1; i >= 0; i--) {
     const b = balls[i];
     b.life -= dt;
+    b.vel.y -= GRAVITY * dt; // la esfera cae poco a poco (arco balístico)
     const speed = b.vel.length();
     const steps = Math.max(1, Math.ceil((speed * dt) / 0.4));
     const stepDt = dt / steps;
@@ -1186,31 +1639,26 @@ function updateWorld(dt) {
       const prevZ = b.mesh.position.z;
       b.mesh.position.addScaledVector(b.vel, stepDt);
       const p = b.mesh.position;
+      const spk = Math.min(4, fxCaps().sparks);
       // rebotes en paredes
       if (Math.abs(p.x) > TUNNEL_HALF - 0.18 && b.bouncesX < 2) {
         p.x = Math.sign(p.x) * (TUNNEL_HALF - 0.18);
-        b.vel.x *= -0.55; b.bouncesX++;
-        sparks.burst(p.x, p.y, p.z, theme.accent, 5, 0.7);
+        b.vel.x *= -0.5; b.bouncesX++;
+        sparks.burst(p.x, p.y, p.z, theme.accent, spk, 0.6);
       }
-      if ((p.y < 0.2 || p.y > 4.55) && b.bouncesY < 2) {
-        p.y = clamp(p.y, 0.2, 4.55);
-        b.vel.y *= -0.55; b.bouncesY++;
-        sparks.burst(p.x, p.y, p.z, theme.accent, 5, 0.7);
+      if (p.y < 0.2 && b.vel.y < 0) {
+        p.y = 0.2; b.vel.y *= -0.42; b.bouncesY++;
+        sparks.burst(p.x, p.y, p.z, theme.accent, spk, 0.6);
+      } else if (p.y > 4.55 && b.vel.y > 0) {
+        p.y = 4.55; b.vel.y *= -0.42; b.bouncesY++;
+        sparks.burst(p.x, p.y, p.z, theme.accent, spk, 0.6);
       }
       // colisiones con vidrio
       for (let j = obstacles.length - 1; j >= 0; j--) {
         const o = obstacles[j];
         if (Math.abs(o.mesh.position.z - p.z) > 4) continue;
         if (collideBallWithObstacle(b, o, prevZ)) {
-          const hitPoint = b.mesh.position.clone();
-          shards.burst(hitPoint.x, hitPoint.y, hitPoint.z, theme.glass, 30, 1.2);
-          sparks.burst(hitPoint.x, hitPoint.y, hitPoint.z, theme.accent, 14, 1.1);
-          safeAudio('shatter', 1.1);
-          if (o.type === 'shelf') dropPickupsFromShelf(o);
-          const sc = o.score || 10;
-          addScore(sc, hitPoint.x, hitPoint.y, hitPoint.z);
-          breaks++;
-          cleanupObstacle(o);
+          breakObstacle(o, b.mesh.position.clone(), true, 1.15);
           consumed = true;
           break;
         }
@@ -1222,8 +1670,10 @@ function updateWorld(dt) {
         }
       }
     }
-    if (consumed || b.life <= 0 || b.mesh.position.z > 4) {
+    pushTrail(b);
+    if (consumed || b.life <= 0 || b.mesh.position.z > 4 || b.mesh.position.y < -3) {
       scene.remove(b.mesh);
+      disposeTrail(b);
       balls.splice(i, 1);
     }
   }
@@ -1234,7 +1684,7 @@ function updateWorld(dt) {
     o.prevZ = o.mesh.position.z;
     o.mesh.position.z += dz;
     if (o.type === 'crystal') o.mesh.rotation.y += dt * 0.8;
-    // cruce de anillo sin tocarlo → ¡PERFECTO!
+    // cruce de anillo sin tocarlo → ¡PERFECTO! (bonus de esferas)
     if (state === 'playing' && o.type === 'ring' && o.prevZ <= 0 && o.mesh.position.z >= 0 && !o.kicked) {
       o.kicked = true;
       const dx = camBase.x - o.mesh.position.x, dy = camBase.y - o.mesh.position.y;
@@ -1242,15 +1692,14 @@ function updateWorld(dt) {
         perfects++;
         safeAudio('perfect');
         addScore(90, o.mesh.position.x, o.mesh.position.y, o.mesh.position.z, '¡PERFECTO!');
+        grantBalls(2, o.mesh.position.x, o.mesh.position.y, o.mesh.position.z);
       }
     }
-    // impacto con el jugador
+    // impacto con el jugador (no otorga esferas: chocarse no es romper)
     if (state === 'playing' && o.prevZ <= 0 && o.mesh.position.z >= 0 && playerHitsObstacle(o)) {
-      if (o.type === 'shelf') dropPickupsFromShelf(o);
       const hp = o.mesh.position;
-      shards.burst(hp.x, hp.y, hp.z, theme.glass, 26, 1);
       damageHit(o);
-      cleanupObstacle(o);
+      breakObstacle(o, hp.clone(), false, 1);
       continue;
     }
     if (o.mesh.position.z > 26) cleanupObstacle(o);
@@ -1394,6 +1843,8 @@ function frame(now) {
 requestAnimationFrame(frame);
 updateAmmoUI();
 updateHeartsUI();
+wireSettingsUI();
+applySettings(); // volumen, calidad y modo seguro guardados
 
 // hook de depuración (solo si ?debug=1) — útil para pruebas automatizadas
 if (new URLSearchParams(location.search).has('debug')) {
@@ -1407,14 +1858,32 @@ if (new URLSearchParams(location.search).has('debug')) {
     breaks: () => breaks,
     perfects: () => perfects,
     obstacles: () => obstacles.length,
+    shots: () => shotsFired,
+    ammoGained: () => ammoGainedTotal,
+    pointerDown: () => pointerDown,
+    fireCooldown: () => fireCooldown,
     aim: () => ({ x: aim.x, y: aim.y, tx: aimTarget.x, ty: aimTarget.y }),
     // Apunta la puntería directamente (sin ratón) para pruebas deterministas.
     setAim: (x, y) => {
       aimTarget.x = clamp(x, -TUNNEL_HALF + 0.25, TUNNEL_HALF - 0.25);
       aimTarget.y = clamp(y, 0.7, 3.5);
+      aim.x = aimTarget.x;
+      aim.y = aimTarget.y;
+      lastAimPoint.set(aim.x, aim.y, camera.position.z - AIM_DIST);
     },
     cam: () => ({ x: camera.position.x, y: camera.position.y, z: camera.position.z, rx: camera.rotation.x, ry: camera.rotation.y, rz: camera.rotation.z }),
     segs: () => envSegments.slice(0, 14).map((s) => Math.round(s.position.z)),
+    // --- ajustes / accesibilidad (para pruebas) ---
+    slingshot: () => !!slingshot && scene.getObjectById(slingshot.id) != null,
+    mirrorReady: () => !!mirrorTex,
+    mirrorCount: () => obstacles.filter((o) => o.mirror).length,
+    settings: () => ({ ...settings }),
+    setSettings: (s) => { Object.assign(settings, s); saveSettings(); applySettings(); },
+    setSafeMode: (v) => { applySafeMode(!!v); saveSettings(); },
+    setQuality: (q) => { applyQuality(q); saveSettings(); },
+    bloomOn: () => !!(bloom && bloom.enabled),
+    pixelRatio: () => renderer.getPixelRatio(),
+    audioGain: () => audio.masterVol,
   };
 }
 

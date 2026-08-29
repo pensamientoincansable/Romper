@@ -110,13 +110,37 @@
 
     .popup { position: fixed; font-weight: 800; font-size: 1.15rem; letter-spacing: 0.12em; color: var(--accent); text-shadow: 0 0 16px color-mix(in srgb, var(--accent) 80%, transparent); pointer-events: none; animation: pop 0.95s ease-out forwards; }
     .popup.gold { color: #ffe9a3; text-shadow: 0 0 18px rgba(255, 214, 110, 0.9); }
+    .popup.ammo { color: #8ef7c8; text-shadow: 0 0 16px rgba(90, 240, 165, 0.85); }
     @keyframes pop { 0% { opacity:0; transform: translate(-50%,-50%) scale(0.7); } 12% { opacity:1; transform: translate(-50%,-58%) scale(1.08); } 100% { opacity:0; transform: translate(-50%,-140%) scale(1); } }
 
     /* ---------- fx overlays ---------- */
     #flash { position: fixed; inset: 0; background: radial-gradient(120% 120% at 50% 50%, transparent 30%, rgba(255, 40, 70, 0.55)); opacity: 0; pointer-events: none; z-index: 25; mix-blend-mode: screen; }
     #flash.hit { animation: flashHit 0.4s ease-out; }
     @keyframes flashHit { 0% { opacity: 1; } 100% { opacity: 0; } }
+    /* Modo seguro (epilepsia): sin destello brusco, solo un pulso suave y lento */
+    #flash.safePulse { background: radial-gradient(120% 120% at 50% 50%, transparent 55%, rgba(255, 90, 120, 0.28)); animation: safePulse 1.1s ease-out; }
+    @keyframes safePulse { 0% { opacity: 0.22; } 100% { opacity: 0; } }
     #vignette { position: fixed; inset: 0; pointer-events: none; z-index: 15; background: radial-gradient(120% 100% at 50% 45%, transparent 58%, rgba(0,0,0,0.5)); }
+
+    /* ---------- ajustes ---------- */
+    #settings { overflow-y: auto; }
+    #settings .setGroup { margin-top: 1.35rem; width: min(420px, 84vw); text-align: left; }
+    #settings .setGroup > label { display: block; font-size: 0.64rem; letter-spacing: 0.3em; text-transform: uppercase; color: color-mix(in srgb, var(--ink) 66%, transparent); margin-bottom: 8px; }
+    .setSlider { display: flex; align-items: center; gap: 12px; }
+    .setSlider input[type="range"] { flex: 1; appearance: auto; accent-color: var(--accent); height: 6px; cursor: pointer; background: rgba(255,255,255,0.12); border-radius: 999px; }
+    .setSlider .val { width: 52px; text-align: right; font-size: 0.78rem; letter-spacing: 0.1em; color: var(--ink); font-weight: 700; }
+    .seg { display: flex; gap: 6px; }
+    .seg button { flex: 1; padding: 10px 0; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); background: var(--glass-tint); color: var(--ink); font-size: 0.74rem; letter-spacing: 0.14em; text-transform: uppercase; cursor: pointer; transition: background 0.15s, color 0.15s; touch-action: manipulation; }
+    .seg button.on { background: color-mix(in srgb, var(--accent) 78%, #061122 22%); color: #04101d; font-weight: 700; }
+    .setRow { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+    .switch { position: relative; width: 58px; height: 30px; flex: 0 0 auto; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); background: rgba(255,255,255,0.08); cursor: pointer; transition: background 0.18s; touch-action: manipulation; }
+    .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #cfdce8; transition: transform 0.18s, background 0.18s; }
+    .switch.on { background: color-mix(in srgb, var(--accent) 72%, transparent); }
+    .switch.on::after { transform: translateX(28px); background: #06111f; }
+    .setNote { margin-top: 10px; font-size: 0.66rem; line-height: 1.55; color: color-mix(in srgb, var(--ink) 55%, transparent); letter-spacing: 0.05em; }
+    #btnCloseSettings { margin-top: 1.6rem; }
+    .titleRow { display: flex; gap: 10px; margin-top: 1.3rem; flex-wrap: wrap; justify-content: center; }
+    .titleRow .btn.small { margin-top: 0; }
 
     #stats { display:flex; gap: 30px; margin-top: 1.6rem; flex-wrap: wrap; justify-content: center; }
     .stat b { display:block; font-size: 1.6rem; color: var(--accent); font-weight: 800; }
@@ -157,12 +181,13 @@
     <div id="distReadout">0 m</div>
   </div>
   <div id="reticle" class="hidden"></div>
-  <div id="hint" class="hidden">Arrastra para apuntar<br/>Mantén pulsado para disparar</div>
+  <div id="hint" class="hidden">Toca o haz clic en el punto exacto<br/>para lanzar · Mantén pulsado para repetir</div>
   <div id="bannerWrap"><div id="banner"></div><div id="bannerSub"></div></div>
 
   <div id="uiBtns" class="hidden">
     <div class="iconBtn" id="btnPause" title="Pausa">❚❚</div>
     <div class="iconBtn" id="btnMute" title="Sonido">♪</div>
+    <div class="iconBtn" id="btnSettings" title="Ajustes">⚙</div>
   </div>
 
   <!-- Título -->
@@ -170,13 +195,17 @@
     <div class="logo">FRACTURA</div>
     <div class="tagline">Rompe el vidrio · Mantén el ritmo</div>
     <div class="cards">
-      <div class="card"><b>Apuntar</b><span>Arrastra el dedo o el ratón para mover la mira.</span></div>
-      <div class="card"><b>Disparar</b><span>Mantén pulsado: la esfera metálica sale sola, en ráfaga.</span></div>
-      <div class="card"><b>Romper</b><span>El vidrio se hace añicos. Cada sección cambia de color.</span></div>
-      <div class="card"><b>Puntuar</b><span>Pasa por los anillos sin tocarlos: bonus ¡PERFECTO!</span></div>
-      <div class="card"><b>Esferas</b><span>Rompe las repisas de cristal para recargar munición.</span></div>
+      <div class="card"><b>Apuntar</b><span>Toca el punto exacto al que quieres disparar: sin arrastrar.</span></div>
+      <div class="card"><b>Disparar</b><span>La esfera sale del tirachinas y cae en arco hasta el punto tocado.</span></div>
+      <div class="card"><b>Romper</b><span>Los cristales son espejos: reflejan tu tirachinas al romperse.</span></div>
+      <div class="card"><b>Esferas</b><span>Cada rotura devuelve esferas: cuanto más pequeño el objetivo, más te da.</span></div>
+      <div class="card"><b>Puntuar</b><span>Pasa por los anillos sin tocarlos: bonus ¡PERFECTO! y +2 esferas.</span></div>
     </div>
     <button class="btn" id="btnStart">Jugar</button>
+    <div class="titleRow">
+      <button class="btn small" id="btnSettingsTitle">⚙ Ajustes</button>
+      <button class="btn small" id="btnSafeTitle">♿ Seguro: ON</button>
+    </div>
     <div class="foot">100 % procedural · sin assets externos · hecho con three.js</div>
   </div>
 
@@ -200,6 +229,40 @@
     <div class="logo" style="font-size: clamp(2rem, 7vw, 3.4rem);">PAUSA</div>
     <div class="tagline" style="margin-top:1rem;">Toca para continuar</div>
     <button class="btn" id="btnResume">Seguir</button>
+    <button class="btn small" id="btnSettingsPause">⚙ Ajustes</button>
+  </div>
+
+  <!-- Ajustes -->
+  <div id="settings" class="overlay hidden">
+    <div class="logo" style="font-size: clamp(1.7rem, 6vw, 2.5rem);">AJUSTES</div>
+    <div class="setGroup">
+      <label>Volumen</label>
+      <div class="setSlider"><input type="range" id="volMaster" min="0" max="100" value="90"><span class="val" id="volMasterVal">90</span></div>
+    </div>
+    <div class="setGroup">
+      <label>Música</label>
+      <div class="setSlider"><input type="range" id="volMusic" min="0" max="100" value="50"><span class="val" id="volMusicVal">50</span></div>
+    </div>
+    <div class="setGroup">
+      <label>Efectos</label>
+      <div class="setSlider"><input type="range" id="volSfx" min="0" max="100" value="100"><span class="val" id="volSfxVal">100</span></div>
+    </div>
+    <div class="setGroup">
+      <label>Calidad de gráficos</label>
+      <div class="seg" id="qualitySeg">
+        <button data-q="baja">Baja</button>
+        <button data-q="media">Media</button>
+        <button data-q="alta">Alta</button>
+      </div>
+    </div>
+    <div class="setGroup">
+      <div class="setRow">
+        <label style="margin:0;">Modo seguro <span style="color:var(--accent2);">(epilepsia)</span></label>
+        <button class="switch" id="safeToggle" title="Modo seguro"></button>
+      </div>
+      <div class="setNote">Suprime los destellos rojos, apaga el resplandor (bloom) y reduce las partículas: apto para jugar con fotosensibilidad.</div>
+    </div>
+    <button class="btn small" id="btnCloseSettings">Cerrar</button>
   </div>
 
   <div id="webglError" class="overlay hidden">

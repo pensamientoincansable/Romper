@@ -3,6 +3,8 @@
 
 import { PENTA } from './themes.js';
 
+const clamp01 = (v) => Math.max(0, Math.min(1, v));
+
 export class AudioEngine {
   constructor() {
     this.ctx = null;
@@ -10,6 +12,10 @@ export class AudioEngine {
     this.musicBus = null;
     this.sfxBus = null;
     this.muted = false;
+    // Volúmenes (0..1) — se pueden ajustar desde los ajustes del juego
+    this.masterVol = 0.9;
+    this.musicVol = 0.5;
+    this.sfxVol = 1.0;
     this._noiseBuf = null;
     this._music = null;
     this._pluckTimer = null;
@@ -25,15 +31,15 @@ export class AudioEngine {
       if (!AC) return;
       this.ctx = new AC();
       this.master = this.ctx.createGain();
-      this.master.gain.value = this.muted ? 0 : 0.9;
+      this.master.gain.value = this.muted ? 0 : this.masterVol;
       this.master.connect(this.ctx.destination);
 
       this.musicBus = this.ctx.createGain();
-      this.musicBus.gain.value = 0.5;
+      this.musicBus.gain.value = this.musicVol;
       this.musicBus.connect(this.master);
 
       this.sfxBus = this.ctx.createGain();
-      this.sfxBus.gain.value = 1.0;
+      this.sfxBus.gain.value = this.sfxVol;
       this.sfxBus.connect(this.master);
 
       // buffer de ruido blanco reutilizable
@@ -64,7 +70,23 @@ export class AudioEngine {
 
   setMuted(m) {
     this.muted = m;
-    if (this.master) this.master.gain.value = m ? 0 : 0.9;
+    if (this.master) this.master.gain.value = m ? 0 : this.masterVol;
+  }
+
+  // Volúmenes independientes (0..1)
+  setMasterVolume(v) {
+    this.masterVol = clamp01(v);
+    if (this.master) this.master.gain.value = this.muted ? 0 : this.masterVol;
+  }
+
+  setMusicVolume(v) {
+    this.musicVol = clamp01(v);
+    if (this.musicBus) this.musicBus.gain.value = this.musicVol;
+  }
+
+  setSfxVolume(v) {
+    this.sfxVol = clamp01(v);
+    if (this.sfxBus) this.sfxBus.gain.value = this.sfxVol;
   }
 
   setTheme(rootHz) {
@@ -128,6 +150,14 @@ export class AudioEngine {
     const t = this.ctx.currentTime;
     this._noise(t, 0.07, 'bandpass', 2600 + Math.random() * 700, 1.6, 0.5);
     this._tone(880, t, 0.09, 'sine', 0.34, (Math.random() * 0.5 - 0.25), this.sfxBus, 180);
+  }
+
+  // chasquido del tirachinas al soltar la goma
+  twang() {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    this._tone(360, t, 0.16, 'sine', 0.4, 0, this.sfxBus, 92);
+    this._tone(190, t + 0.02, 0.2, 'triangle', 0.2, 0, this.sfxBus, 64);
   }
 
   shatter(power = 1) {
