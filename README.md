@@ -1,7 +1,7 @@
 # ✦ FRACTURA
 
 > **Rompe el vidrio. Mantén el ritmo.** Un juego en primera persona sobre un riel
-> infinito: lanzas esferas metálicas con un **tirachinas** y haces añicos paneles,
+> infinito: lanzas **esferas iridiscentes** con un **tirachinas** y haces añicos paneles,
 > anillos, columnas y cristales que son **espejos** mientras un túnel minimalista
 > fluye hacia ti.
 
@@ -12,11 +12,13 @@ reconstruye con identidad propia:
 | FRACTURA | En lugar de… |
 |---|---|
 | Tirachinas con disparo por toque preciso y arco balístico | apuntado arrastrando |
+| Esfera iridiscente que cambia de color con el ambiente (tono complementario) | esfera de aspecto fijo |
 | Cristales que son espejos pulidos (reflejan tu tirachinas) | cristal dorado tradicional |
-| 6 paletas que respiran: hielo, ámbar, orquídea, esmeralda, rubí, neón | un solo esquema de color |
+| 6 paletas que respiran y se funden despacio al superar cada sección: hielo, ámbar, orquídea, esmeralda, rubí, neón | un solo esquema de color |
+| Cielo con gradiente multicapa, auroras suaves y estrellas que titilean | cielo estático |
 | Corredor futurista con portales de luz y rejillas | pasillo clásico de galería |
 | Cada rotura devuelve esferas: cuanto más pequeño el objetivo, más te da | esferas flotantes estáticas |
-| Progresión suave: los objetivos encogen poco a poco y la velocidad aumenta | — |
+| Progresión suave: se arranca desde parado, la velocidad crece muy despacio y la dificultad de puntería avanza al mismo ritmo | — |
 | Ajustes de volumen, calidad de gráficos y **modo seguro (epilepsia)** | — |
 | Bonus **¡PERFECTO!** (+2 esferas) por cruzar anillos sin rozarlos | — |
 | Música ambiental generativa (pentatónica, cambia de tonalidad por sección) | banda sonora con licencia |
@@ -31,13 +33,16 @@ ningún asset externo ni binario.
   mantén pulsado para repetir el disparo (o `ESPACIO` en teclado). Una guía tenue muestra
   el arco antes de soltar.
 - **Romper** — el vidrio se hace añicos; los cristales son espejos que reflejan tu tirachinas.
+- **Esfera iridiscente** — la esfera cambia de color según el ambiente (tono complementario, máximo contraste) y oscila como una película de aceite.
 - **Esferas** — cada rotura devuelve esferas: cuanto más pequeño y difícil es el objetivo,
   más esferas otorga. Romper es la forma de seguir disparando.
 - **Puntuar** — cada rotura suma; encadena roturas para el multiplicador de combo.
 - **No toques el vidrio** — si chocas con un panel, anillo o cristal pierdes una vida.
 - **¡PERFECTO!** — pasa por el centro de un anillo sin tocarlo para un bonus de +2 esferas.
-- **Progresión** — a medida que avanzas los objetivos se encogen muy poco a poco y la
-  velocidad de avance aumenta: siempre desafiante, nunca imposible.
+- **Progresión** — la partida arranca desde parado y la velocidad aumenta muy lentamente
+  (nunca brusca); a la vez, los objetivos se encogen poco a poco al mismo ritmo que la
+  velocidad crece: acertar se vuelve más difícil exactamente cuando el mundo se acelera.
+  Los anillos también se reducen y todo objetivo pequeño paga más esferas.
 
 ## ⚙️ Ajustes (⚙ en partida, en pausa o en el menú)
 

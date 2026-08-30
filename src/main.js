@@ -64,6 +64,17 @@ const AIM_DIST = 55;               // profundidad del plano de puntería
 const GRAVITY = 15;                // m/s² — la esfera cae poco a poco (arco tipo Smash Hit)
 const BALL_H_SPEED = 78;           // velocidad horizontal media de lanzamiento
 const FIRE_COOLDOWN = 0.16;        // cadencia del tirachinas
+// --- esfera iridiscente ---
+// Radio de la esfera: un poco más de la mitad del tamaño original (0.19).
+const BALL_R = 0.115;
+const BALL_HIT = BALL_R * 0.84;    // radio de colisión (ligeramente permisivo)
+// El tirachinas se adapta al tamaño de la bola: escala proporcional.
+const SLING_SCALE = 0.95 * (BALL_R / 0.19);
+// --- velocidad: arranca desde parado y crece muy lentamente ---
+const SPEED_BASE = 4.2;            // velocidad de crucero al comenzar (m/s)
+const SPEED_GAIN = 0.0026;         // m/s adicionales por cada metro recorrido
+const SPEED_CAP = 30;              // tope de velocidad (muy lejos, tras kilómetros)
+const MENU_SPEED = 3.2;            // deriva suave del fondo en el menú
 const SLING_Y = -0.58;             // posición del tirachinas (respecto a la cámara)
 const SLING_Z = -0.95;
 const SEG_LEN = 80;                // longitud de cada segmento de entorno
@@ -292,27 +303,46 @@ const pmrem = new THREE.PMREMGenerator(renderer);
 scene.environment = pmrem.fromEquirectangular(makeEnvTexture()).texture;
 
 // ---------------------------------------------------------------------------
-// Cielo (domo con gradiente) + estrellas
+// Cielo (domo con gradiente multicapa + auroras sutiles) + estrellas
 // ---------------------------------------------------------------------------
 const skyUniforms = {
   topColor: { value: new THREE.Color(0x0a1e3f) },
+  midColor: { value: new THREE.Color(0x0d2a52) },
   bottomColor: { value: new THREE.Color(0x03060f) },
+  auroraColor: { value: new THREE.Color(0x9dffef) },
+  uTime: { value: 0 },
   exponent: { value: 0.85 },
 };
 const skyDome = new THREE.Mesh(
-  new THREE.SphereGeometry(1900, 32, 16),
+  new THREE.SphereGeometry(1900, 48, 24),
   new THREE.ShaderMaterial({
     uniforms: skyUniforms,
     vertexShader: `
       varying vec3 vPos;
       void main(){ vPos = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
     fragmentShader: `
-      uniform vec3 topColor; uniform vec3 bottomColor; uniform float exponent;
+      uniform vec3 topColor; uniform vec3 midColor; uniform vec3 bottomColor;
+      uniform vec3 auroraColor; uniform float uTime; uniform float exponent;
       varying vec3 vPos;
       void main(){
-        float h = normalize(vPos).y;
-        float f = pow(max(h, 0.0), exponent);
-        gl_FragColor = vec4(mix(bottomColor, topColor, f), 1.0);
+        vec3 dir = normalize(vPos);
+        float h = dir.y;
+        // gradiente en tres paradas: cenit → horizonte → abismo
+        vec3 col = mix(bottomColor, midColor, smoothstep(-0.10, 0.24, pow(max(h, 0.0), exponent) + min(h, 0.0) * 0.6));
+        col = mix(col, topColor, smoothstep(0.16, 0.78, h));
+        // resplandor cálido justo en el horizonte (profundidad)
+        col += midColor * 0.35 * smoothstep(0.16, 0.0, abs(h - 0.02));
+        // auroras: dos bandas lentas, tenues y armoniosas (no estroboscópicas)
+        float az = atan(dir.z, dir.x);
+        float band = sin(az * 2.0 + uTime * 0.055 + sin(uTime * 0.031) * 1.6)
+                   * sin(az * 3.0 - uTime * 0.037 + 2.1);
+        float striate = 0.72 + 0.28 * sin(az * 22.0 + uTime * 0.16);
+        float curtain = smoothstep(0.08, 0.55, h) * (0.5 + 0.5 * band) * striate;
+        col += auroraColor * curtain * 0.045;
+        // dithering: evita el banding en degradados oscuros
+        float d = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+        col += (d - 0.5) * (1.6 / 255.0);
+        gl_FragColor = vec4(col, 1.0);
       }`,
     side: THREE.BackSide, depthWrite: false, fog: false,
   })
@@ -513,10 +543,7 @@ const glassMat = new THREE.MeshPhysicalMaterial({
   thickness: 0.7, transparent: true, opacity: 0.88, side: THREE.DoubleSide,
   emissive: 0x2b7fd4, emissiveIntensity: 0.34, clearcoat: 1, envMapIntensity: 1.4,
 });
-const metalMat = new THREE.MeshStandardMaterial({
-  color: 0xe8f2fa, roughness: 0.12, metalness: 1.0,
-  emissive: 0x33465e, emissiveIntensity: 0.5, envMapIntensity: 1.8,
-});
+// (metalMat se retiró: todas las esferas usan ahora ballMat, iridiscente)
 const haloMat = new THREE.SpriteMaterial({
   map: glowTex, color: 0xbfe8ff, transparent: true, opacity: 0.85,
   blending: THREE.AdditiveBlending, depthWrite: false,
@@ -531,10 +558,22 @@ const GEO = {
   column: new THREE.CylinderGeometry(0.22, 0.26, 3.6, 12),
   shelf: new THREE.BoxGeometry(2.3, 0.16, 0.55),
   crystal: new THREE.TetrahedronGeometry(0.3),
-  ball: new THREE.SphereGeometry(0.19, 18, 14),
+  ball: new THREE.SphereGeometry(BALL_R, 18, 14),
   shard: new THREE.TetrahedronGeometry(0.055),
   spark: new THREE.SphereGeometry(0.032, 6, 6),
 };
+
+// ---------------------------------------------------------------------------
+// Esfera iridiscente: cambia de tono según la paleta del ambiente (tono
+// complementario → máximo contraste) y oscila suavemente entre tonos afines,
+// como una burbuja de jabón bajo la luz del corredor.
+// ---------------------------------------------------------------------------
+const ballMat = new THREE.MeshPhysicalMaterial({
+  color: 0xf2f6ff, roughness: 0.09, metalness: 0.55,
+  clearcoat: 1.0, clearcoatRoughness: 0.08,
+  iridescence: 1.0, iridescenceIOR: 1.32, iridescenceThicknessRange: [120, 420],
+  emissive: 0xb44dff, emissiveIntensity: 0.5, envMapIntensity: 2.2,
+});
 
 // ---------------------------------------------------------------------------
 // Tirachinas (modelo procedural) + espejos que reflejan el tirachinas
@@ -560,10 +599,10 @@ function buildSlingshotModel() {
   tipL.position.set(-0.185, 0.21, -0.05);
   const tipR = tipL.clone();
   tipR.position.x = 0.185;
-  // cuero con la esfera cargada
+  // cuero con la esfera cargada (iridiscente, igual que las que se lanzan)
   const pocket = new THREE.Group();
   pocket.position.set(0, 0.16, 0.16);
-  const ballMesh = new THREE.Mesh(GEO.ball, metalMat);
+  const ballMesh = new THREE.Mesh(GEO.ball, ballMat);
   ballMesh.scale.setScalar(1.15);
   pocket.add(ballMesh);
   // gomas elásticas
@@ -577,12 +616,13 @@ function buildSlingshotModel() {
 }
 
 const slingshot = buildSlingshotModel();
-slingshot.scale.setScalar(0.95);
+slingshot.scale.setScalar(SLING_SCALE); // proporciones adaptadas al tamaño de la bola
 slingshot.position.set(0, SLING_Y, SLING_Z);
 scene.add(camera);
 camera.add(slingshot);
 const slingWorldPos = new THREE.Vector3();
 slingshot.getWorldPosition(slingWorldPos); // posición inicial válida para el primer disparo
+const launchOrigin = new THREE.Vector3().copy(slingWorldPos); // bolsillo del tirachinas
 const _vA = new THREE.Vector3();
 const _vB = new THREE.Vector3();
 const _vC = new THREE.Vector3();
@@ -604,6 +644,7 @@ function buildMirrorTexture() {
   rim.position.set(-5, 3, -4);
   s.add(rim);
   const sl = buildSlingshotModel();
+  sl.scale.setScalar(SLING_SCALE);
   sl.position.set(0, -0.75, 2.3);
   s.add(sl);
   const floor = new THREE.Mesh(
@@ -799,9 +840,9 @@ function cleanupObstacle(o) {
 function breakObstacle(o, hitPoint, byBall, power = 1) {
   const p = (hitPoint || o.mesh.position).clone();
   const caps = fxCaps();
-  const color = o.mirror ? theme.accent2 : (o.tint || theme.glass);
+  const color = o.mirror ? blendCur.accent2 : (o.tint || blendCur.glass);
   shards.burst(p.x, p.y, p.z, color, Math.min(o.type === 'ring' || o.type === 'ringBig' ? 30 : 22, caps.shards), power);
-  sparks.burst(p.x, p.y, p.z, theme.accent, Math.min(9, caps.sparks), power);
+  sparks.burst(p.x, p.y, p.z, blendCur.accent, Math.min(9, caps.sparks), power);
   safeAudio('shatter', power);
   if (byBall) {
     const sc = o.score || 10;
@@ -840,13 +881,16 @@ function makePanel(x, y, z, sx = 1) {
 
 function makeRing(x, y, z, big = false) {
   const mesh = new THREE.Mesh(big ? GEO.ringBig : GEO.ring, glassMat);
+  mesh.scale.setScalar(ringScale); // los anillos también encogen con la dificultad
   mesh.position.set(x, y, z);
   scene.add(mesh);
-  const R = big ? 1.5 : 1.0, tube = big ? 0.32 : 0.22;
+  const R0 = big ? 1.5 : 1.0, tube0 = big ? 0.32 : 0.22;
+  const R = R0 * ringScale, tube = tube0 * ringScale;
   const o = obstacleData('ring', mesh, {
     radius: R, tube, openR: R - tube, score: big ? 150 : 60, big,
   });
-  o.reward = big ? 3 : 4;
+  // recompensa creciente: hilvanar un anillo pequeño da más esferas
+  o.reward = Math.round((big ? 3 : 4) * (1 + (1 - ringScale) * 4.4));
   obstacles.push(o);
   return o;
 }
@@ -885,7 +929,7 @@ function makeShelf(x, y, z) {
   // esferas de munición encima de la repisa
   const n = randInt(6, 9);
   for (let i = 0; i < n; i++) {
-    const bp = new THREE.Mesh(GEO.ball, metalMat);
+    const bp = new THREE.Mesh(GEO.ball, ballMat);
     bp.position.set(x + rand(-0.95, 0.95), y + 0.22, z + rand(-0.1, 0.1));
     scene.add(bp);
     pickups.push({
@@ -914,9 +958,11 @@ function dropPickupsFromShelf(o) {
 // ---------------------------------------------------------------------------
 let spawnCursor = -60;
 let rng = Math.random;
-// Progresión: los objetivos se encogen muy poco a poco con la distancia y la
-// velocidad de avance aumenta; el reparto de esferas compensa la dificultad.
-let sizeScale = 1;
+// Progresión: los objetivos se encogen muy poco a poco a medida que la velocidad
+// (que también crece despacio) avanza; acertar se vuelve más difícil al mismo
+// ritmo que el mundo se acelera. La economía de esferas compensa.
+let sizeScale = 1;   // paneles y cristales
+let ringScale = 1;   // anillos (menos reducción: atravesarlos es el reto)
 
 const PATTERNS = [
   { w: 6, build: (z, R) => { // muro de cristal
@@ -971,9 +1017,12 @@ const PATTERNS = [
 function spawnChamber() {
   const R = Math.random;
   const z = spawnCursor;
-  // dificultad según la distancia (objetivos más pequeños, algo más densos)
-  const diff = clamp((gameDist + -z) / 1800, 0, 1);
-  sizeScale = 1 - 0.22 * diff;
+  // dificultad: 72 % distancia recorrida + 28 % velocidad actual → la puntería
+  // se vuelve exigente exactamente al ritmo en que el mundo se acelera
+  const depth = clamp((gameDist + -z) / 2600, 0, 1);
+  const diff = clamp(depth * 0.72 + (currentSpeed / SPEED_CAP) * 0.28, 0, 1);
+  sizeScale = 1 - 0.26 * diff;
+  ringScale = 1 - 0.18 * diff;
   // peso: evita repetir el mismo patrón dos veces seguidas
   const pool = lastPattern >= 0
     ? PATTERNS.filter((_, i) => i !== lastPattern)
@@ -1057,13 +1106,14 @@ function launchBall(targetX, targetY, targetZ) {
   safeAudio('shoot');
   safeAudio('twang');
 
-  const origin = slingWorldPos.clone();
+  const origin = launchOrigin.clone();
   const target = new THREE.Vector3(targetX, targetY, targetZ);
   const { v } = computeBallistic(origin, target);
-  const mesh = new THREE.Mesh(GEO.ball, metalMat);
+  const mesh = new THREE.Mesh(GEO.ball, ballMat);
   mesh.position.copy(origin);
   const halo = new THREE.Sprite(haloMat);
-  halo.scale.set(0.9, 0.9, 1);
+  const haloS = BALL_R * 4.8;
+  halo.scale.set(haloS, haloS, 1);
   mesh.add(halo);
   scene.add(mesh);
 
@@ -1072,7 +1122,7 @@ function launchBall(targetX, targetY, targetZ) {
   trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPts, 3));
   trailGeo.setDrawRange(0, 0);
   const trailLine = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({
-    color: 0xbfe8ff, transparent: true, opacity: 0.4,
+    color: ballMat.emissive.getHex(), transparent: true, opacity: 0.4,
     blending: THREE.AdditiveBlending, depthWrite: false,
   }));
   trailLine.frustumCulled = false;
@@ -1126,7 +1176,7 @@ function collideBallWithObstacle(b, o, prevZ) {
     if (prevZ >= p.z && bz < p.z) {
       const dx = bx - p.x, dy = by - p.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
-      return dist > o.openR - 0.14 && dist < o.radius + o.tube + 0.18;
+      return dist > o.openR - BALL_HIT * 0.8 && dist < o.radius + o.tube + BALL_HIT * 0.95;
     }
     return false;
   }
@@ -1134,10 +1184,10 @@ function collideBallWithObstacle(b, o, prevZ) {
     const p = o.mesh.position;
     const dx = bx - p.x, dz = bz - p.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
-    return dist < o.radius + 0.16 && Math.abs(by - p.y) < o.halfH;
+    return dist < o.radius + BALL_HIT && Math.abs(by - p.y) < o.halfH;
   }
   if (o.type === 'crystal') {
-    return b.mesh.position.distanceTo(o.mesh.position) < o.radius + 0.16;
+    return b.mesh.position.distanceTo(o.mesh.position) < o.radius + BALL_HIT;
   }
   if (o.type === 'panel' || o.type === 'shelf') {
     const h = o.half;
@@ -1148,7 +1198,7 @@ function collideBallWithObstacle(b, o, prevZ) {
     const cy = clamp(by, p.y - h.y, p.y + h.y);
     const cz = clamp(p.z, z0, z1);
     const dx = bx - cx, dy = by - cy, dz = p.z - cz;
-    return dx * dx + dy * dy + dz * dz < 0.16 * 0.16;
+    return dx * dx + dy * dy + dz * dz < BALL_HIT * BALL_HIT;
   }
   return false;
 }
@@ -1270,18 +1320,129 @@ function collectPickup(pu) {
   ammo = Math.min(maxAmmo, ammo + 1);
   updateAmmoUI();
   safeAudio('pickup');
-  sparks.burst(pu.mesh.position.x, pu.mesh.position.y, pu.mesh.position.z, theme.accent, 8, 0.8);
+  sparks.burst(pu.mesh.position.x, pu.mesh.position.y, pu.mesh.position.z, blendCur.accent, 8, 0.8);
   popup('+1', pu.mesh.position.x, pu.mesh.position.y, pu.mesh.position.z);
 }
 
 // ---------------------------------------------------------------------------
-// Banner / paletas
+// Banner / paletas — con fundido lento entre ambientes (transición armónica)
 // ---------------------------------------------------------------------------
 let bannerTimer = 0;
 let themeIndex = 0;
 let theme = THEMES[0];
 let lastThemeDistance = 0;
 let lastCheckpointDistance = 0;
+
+// Colores "actuales" (se funden hacia los objetivos cada frame) y "objetivo".
+// Cada ranura alimenta una parte del mundo: niebla, cielo, luces, materiales…
+const BLEND_SLOTS = [
+  'accent', 'accent2', 'glass', 'glassEm', 'fog',
+  'skyTop', 'skyMid', 'skyBottom', 'aurora',
+  'floor', 'floorEm', 'wall', 'wallEm', 'rail', 'dust', 'star',
+  'key', 'rim', 'fill', 'glowFar', 'orb0', 'orb1', 'orb2',
+];
+const blendCur = {}, blendTgt = {};
+for (const k of BLEND_SLOTS) { blendCur[k] = new THREE.Color(); blendTgt[k] = new THREE.Color(); }
+let blending = false; // true mientras queda fundido por hacer
+
+function computeThemeTargets(th) {
+  blendTgt.accent.setHex(th.accent);
+  blendTgt.accent2.setHex(th.accent2);
+  blendTgt.glass.setHex(th.glass);
+  blendTgt.glassEm.setHex(th.emissive);
+  blendTgt.fog.setHex(th.fog);
+  blendTgt.skyTop.setHex(th.bgTop);
+  blendTgt.skyBottom.setHex(lerpColor(th.bgBottom, th.accent, 0.14));
+  blendTgt.skyMid.setHex(lerpColor(th.bgTop, th.accent, 0.24));
+  blendTgt.aurora.setHex(th.accent2);
+  blendTgt.floor.setHex(lerpColor(th.floor, th.accent, 0.45));
+  blendTgt.floorEm.setHex(th.accent);
+  blendTgt.wall.setHex(lerpColor(th.wall, th.accent, 0.12));
+  blendTgt.wallEm.setHex(th.accent);
+  blendTgt.rail.setHex(th.accent);
+  blendTgt.dust.setHex(lerpColor(th.accent, 0xffffff, 0.45));
+  blendTgt.star.setHex(lerpColor(0xffffff, th.accent2, 0.22));
+  blendTgt.key.setHex(lerpColor(0xffffff, th.accent, 0.25));
+  blendTgt.rim.setHex(th.accent2);
+  blendTgt.fill.setHex(lerpColor(0xa0c8ff, th.accent, 0.35));
+  blendTgt.glowFar.setHex(th.accent);
+  blendTgt.orb0.setHex(th.accent2);
+  blendTgt.orb1.setHex(th.accent);
+  blendTgt.orb2.setHex(th.accent2);
+}
+
+// Vuelca los colores fundidos en materiales, luces, uniforms y variables CSS.
+function applyBlendedColors() {
+  glassMat.color.copy(blendCur.glass);
+  glassMat.emissive.copy(blendCur.glassEm);
+  scene.fog.color.copy(blendCur.fog);
+  skyUniforms.topColor.value.copy(blendCur.skyTop);
+  skyUniforms.midColor.value.copy(blendCur.skyMid);
+  skyUniforms.bottomColor.value.copy(blendCur.skyBottom);
+  skyUniforms.auroraColor.value.copy(blendCur.aurora);
+  floorMat.color.copy(blendCur.floor);
+  floorMat.emissive.copy(blendCur.floorEm);
+  wallMat.color.copy(blendCur.wall);
+  wallMat.emissive.copy(blendCur.wallEm);
+  railMat.color.copy(blendCur.rail);
+  railMat.emissive.copy(blendCur.rail);
+  glowFarglow.material.color.copy(blendCur.glowFar);
+  orbs[0].material.color.copy(blendCur.orb0);
+  orbs[1].material.color.copy(blendCur.orb1);
+  orbs[2].material.color.copy(blendCur.orb2);
+  keyLight.color.copy(blendCur.key);
+  rimLight.color.copy(blendCur.rim);
+  fillLight.color.copy(blendCur.fill);
+  stars.material.color.copy(blendCur.star);
+  dust.material.color.copy(blendCur.dust);
+  const hex = '#' + blendCur.accent.getHexString();
+  const hex2 = '#' + blendCur.accent2.getHexString();
+  document.documentElement.style.setProperty('--accent', hex);
+  document.documentElement.style.setProperty('--accent2', hex2);
+}
+
+function applyTheme(idx, instant = false) {
+  themeIndex = ((idx % THEMES.length) + THEMES.length) % THEMES.length;
+  theme = THEMES[themeIndex];
+  computeThemeTargets(theme);
+  if (instant) {
+    for (const k of BLEND_SLOTS) blendCur[k].copy(blendTgt[k]);
+    applyBlendedColors();
+    blending = false;
+  } else {
+    blending = true; // el fundido ocurre poco a poco en updateThemeBlend
+  }
+  safeAudio('setTheme', theme.root);
+}
+
+// Fundido exponencial (~3 s) hacia la paleta objetivo; se llama cada frame.
+function updateThemeBlend(dt) {
+  if (!blending) return;
+  const k = 1 - Math.exp(-dt * 1.35);
+  let maxDelta = 0;
+  for (const s of BLEND_SLOTS) {
+    blendCur[s].lerp(blendTgt[s], k);
+    maxDelta = Math.max(maxDelta, Math.abs(blendCur[s].r - blendTgt[s].r), Math.abs(blendCur[s].g - blendTgt[s].g), Math.abs(blendCur[s].b - blendTgt[s].b));
+  }
+  if (maxDelta < 0.0012) {
+    for (const s of BLEND_SLOTS) blendCur[s].copy(blendTgt[s]);
+    blending = false;
+  }
+  applyBlendedColors();
+}
+
+// Esfera iridiscente: tono complementario al ambiente (máximo contraste) con
+// una deriva lenta entre tonos afines, como una película de aceite.
+const _irHSL = { h: 0, s: 0, l: 0 };
+function updateBallIridescence(t) {
+  blendCur.accent.getHSL(_irHSL);
+  const base = (_irHSL.h + 0.5) % 1; // complementario → contraste con el ambiente
+  const h = (base + 0.055 * Math.sin(t * 0.85) + 0.04 * Math.sin(t * 0.33 + 2.1) + 2) % 1;
+  ballMat.emissive.setHSL(h, 0.85, 0.58);
+  ballMat.color.setHSL((h + 0.06) % 1, 0.5, 0.72);
+  haloMat.color.copy(ballMat.emissive);
+  ghostLine.material.color.copy(ballMat.emissive);
+}
 
 function showBanner(title, sub = '') {
   el.banner.textContent = title;
@@ -1290,46 +1451,12 @@ function showBanner(title, sub = '') {
   bannerTimer = 2.6;
 }
 
-function applyTheme(idx) {
-  themeIndex = ((idx % THEMES.length) + THEMES.length) % THEMES.length;
-  theme = THEMES[themeIndex];
-
-  glassMat.color.setHex(theme.glass);
-  glassMat.emissive.setHex(theme.emissive);
-  scene.fog.color.setHex(theme.fog);
-  skyUniforms.topColor.value.setHex(theme.bgTop);
-  skyUniforms.bottomColor.value.setHex(lerpColor(theme.bgBottom, theme.accent, 0.14));
-
-  floorMat.color.setHex(lerpColor(theme.floor, theme.accent, 0.45));
-  floorMat.emissive.setHex(theme.accent);
-  wallMat.color.setHex(lerpColor(theme.wall, theme.accent, 0.12));
-  wallMat.emissive.setHex(theme.accent);
-  wallMat.emissiveIntensity = 0.3;
-  railMat.color.setHex(theme.accent);
-  railMat.emissive.setHex(theme.accent);
-  glowFarglow.material.color.setHex(theme.accent);
-  orbs[0].material.color.setHex(theme.accent2);
-  orbs[1].material.color.setHex(theme.accent);
-  orbs[2].material.color.setHex(theme.accent2);
-
-  // luces suaves acordes con la paleta
-  keyLight.color.setHex(lerpColor(0xffffff, theme.accent, 0.25));
-  rimLight.color.setHex(theme.accent2);
-  haloMat.color.setHex(theme.accent);
-
-  document.documentElement.style.setProperty('--accent', '#' + theme.accent.toString(16).padStart(6, '0'));
-  document.documentElement.style.setProperty('--accent2', '#' + theme.accent2.toString(16).padStart(6, '0'));
-
-  safeAudio('setTheme', theme.root);
-}
-
 // ---------------------------------------------------------------------------
 // Bucle principal / estado
 // ---------------------------------------------------------------------------
 let state = 'menu'; // menu | playing | paused | over
 let gameDist = 0;
-let baseSpeed = 8;
-let currentSpeed = 8;
+let currentSpeed = 0; // la partida empieza desde parado
 let timeScale = 1;
 let hitStop = 0;
 let lastT = performance.now();
@@ -1357,11 +1484,16 @@ function startGame(skipMeters = 0) {
   bannerTimer = 0;
   el.bannerWrap.classList.remove('show');
   lastPattern = -1;
-  spawnCursor = -55 - skipMeters;
+  // El cursor de generación es RELATIVO al jugador: empezar en ?start=N cambia
+  // el ambiente y la dificultad, pero los obstáculos deben aparecer de inmediato.
+  // (Antes se restaba skipMeters y el cursor quedaba fuera del rango de relleno
+  // del spawner → túnel vacío durante decenas de segundos al saltar de paleta.)
+  spawnCursor = -40;
   lastThemeDistance = Math.floor(skipMeters / THEME_EVERY);
   lastCheckpointDistance = Math.floor(skipMeters / CHECKPOINT_EVERY);
   envSegments.forEach((seg, i) => { seg.position.z = -i * SEG_LEN; });
-  applyTheme(Math.floor(skipMeters / THEME_EVERY));
+  applyTheme(Math.floor(skipMeters / THEME_EVERY), true); // paleta inicial sin fundido
+  currentSpeed = 0; // la carrera empieza desde parado y acelera despacio
   el.score.textContent = '0'; el.combo.textContent = '';
   updateAmmoUI(); updateHeartsUI();
   el.title.classList.add('hidden');
@@ -1381,7 +1513,7 @@ function startGame(skipMeters = 0) {
 
 function endToMenu() {
   state = 'menu';
-  baseSpeed = 8;
+  currentSpeed = MENU_SPEED;
   pointerDown = false;
   spaceHeld = false;
   hoverScreen = null;
@@ -1390,7 +1522,7 @@ function endToMenu() {
   pickups.length = 0;
   for (const b of [...balls]) { scene.remove(b.mesh); }
   balls.length = 0;
-  spawnCursor = -55;
+  spawnCursor = -40;
   bannerTimer = 0;
   el.bannerWrap.classList.remove('show');
   el.hint.classList.add('hidden');
@@ -1565,8 +1697,12 @@ document.addEventListener('visibilitychange', () => {
 // Actualización de mundo
 // ---------------------------------------------------------------------------
 function updateWorld(dt) {
-  currentSpeed = damp(currentSpeed, baseSpeed, 1.2, dt);
-  baseSpeed = state === 'playing' ? Math.min(46, 26 + gameDist * 0.0036) : 8;
+  // velocidad objetivo: parte casi de parado y crece muy lentamente con la
+  // distancia; en el menú solo hay una deriva suave de fondo
+  const targetSpeed = state === 'playing'
+    ? Math.min(SPEED_CAP, SPEED_BASE + gameDist * SPEED_GAIN)
+    : MENU_SPEED;
+  currentSpeed = damp(currentSpeed, targetSpeed, state === 'playing' ? 0.7 : 1.2, dt);
   const dz = currentSpeed * dt;
   gameDist += dz;
   spawnCursor += dz; // el mundo avanza; el cursor de generación también
@@ -1586,6 +1722,7 @@ function updateWorld(dt) {
 
   // --- tirachinas: orientación, goma elástica y balín cargado ---
   slingshot.getWorldPosition(slingWorldPos);
+  slingshot.userData.pocket.getWorldPosition(launchOrigin); // la esfera sale del bolsillo
 
   // disparo (tirachinas): al mantener pulsado repite hacia el último punto
   fireCooldown = Math.max(0, fireCooldown - dt);
@@ -1615,7 +1752,7 @@ function updateWorld(dt) {
       band.quaternion.setFromUnitVectors(_unitZ, _vC);
     }
     const idle = 1 + Math.sin(elapsed * 2.2) * 0.012;
-    slingshot.scale.setScalar(0.95 * idle);
+    slingshot.scale.setScalar(SLING_SCALE * idle);
   }
 
   // --- guía del arco (dónde caerá la próxima esfera) ---
@@ -1624,7 +1761,7 @@ function updateWorld(dt) {
     const hp = pickTargetPoint(hoverScreen.x, hoverScreen.y);
     if (hp) ghostTarget = hp;
   }
-  updateGhostArc(slingWorldPos, ghostTarget);
+  updateGhostArc(launchOrigin, ghostTarget);
 
   // mover esferas del jugador (substeps para no atravesar cristales finos)
   for (let i = balls.length - 1; i >= 0; i--) {
@@ -1644,14 +1781,14 @@ function updateWorld(dt) {
       if (Math.abs(p.x) > TUNNEL_HALF - 0.18 && b.bouncesX < 2) {
         p.x = Math.sign(p.x) * (TUNNEL_HALF - 0.18);
         b.vel.x *= -0.5; b.bouncesX++;
-        sparks.burst(p.x, p.y, p.z, theme.accent, spk, 0.6);
+        sparks.burst(p.x, p.y, p.z, blendCur.accent, spk, 0.6);
       }
       if (p.y < 0.2 && b.vel.y < 0) {
         p.y = 0.2; b.vel.y *= -0.42; b.bouncesY++;
-        sparks.burst(p.x, p.y, p.z, theme.accent, spk, 0.6);
+        sparks.burst(p.x, p.y, p.z, blendCur.accent, spk, 0.6);
       } else if (p.y > 4.55 && b.vel.y > 0) {
         p.y = 4.55; b.vel.y *= -0.42; b.bouncesY++;
-        sparks.burst(p.x, p.y, p.z, theme.accent, spk, 0.6);
+        sparks.burst(p.x, p.y, p.z, blendCur.accent, spk, 0.6);
       }
       // colisiones con vidrio
       for (let j = obstacles.length - 1; j >= 0; j--) {
@@ -1762,6 +1899,14 @@ function updateWorld(dt) {
   // niebla ligera según velocidad (sensación de inmersión)
   scene.fog.density = 0.0082 + currentSpeed * 0.00005;
 
+  // ambiente: fundido suave entre paletas, iridiscencia de la esfera,
+  // tiempo del cielo (auroras), titileo de estrellas y pulso del resplandor
+  updateThemeBlend(dt);
+  updateBallIridescence(elapsed);
+  skyUniforms.uTime.value = elapsed;
+  stars.material.opacity = fxCaps().stars * (0.86 + 0.14 * Math.sin(elapsed * 1.6));
+  glowFarglow.material.opacity = 0.105 + 0.03 * Math.sin(elapsed * 0.42);
+
   // sistema de esquirlas y chispas
   shards.update(dt, dz);
   sparks.update(dt, dz);
@@ -1841,6 +1986,7 @@ function frame(now) {
 }
 
 requestAnimationFrame(frame);
+applyTheme(0, true); // siembra los colores fundidos con la primera paleta
 updateAmmoUI();
 updateHeartsUI();
 wireSettingsUI();
@@ -1859,6 +2005,12 @@ if (new URLSearchParams(location.search).has('debug')) {
     perfects: () => perfects,
     obstacles: () => obstacles.length,
     shots: () => shotsFired,
+    speed: () => currentSpeed,
+    speedInfo: () => ({ cur: currentSpeed, cap: SPEED_CAP, base: SPEED_BASE, gain: SPEED_GAIN }),
+    ballR: () => BALL_R,
+    slingScale: () => SLING_SCALE,
+    themeIndex: () => themeIndex,
+    blending: () => blending,
     ammoGained: () => ammoGainedTotal,
     pointerDown: () => pointerDown,
     fireCooldown: () => fireCooldown,

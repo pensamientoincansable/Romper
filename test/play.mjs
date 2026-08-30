@@ -50,7 +50,7 @@ await page.screenshot({ path: OUT + 'p1-menu.png' });
 
 // ---------------------------------------------------------------- jugar
 await page.click('#btnStart');
-await page.waitForTimeout(1600);
+await page.waitForTimeout(400);
 check('2. botón Jugar → estado playing', (await readState()) === 'playing');
 check('2. HUD visible al empezar', !(await isHidden('hud')));
 check('2. retícula visible al empezar', !(await isHidden('reticle')));
@@ -58,10 +58,32 @@ check('2. tirachinas en escena', await page.evaluate(() => window.__fractura.sli
 check('2. espejo de cristal preparado (refleja el tirachinas)', await page.evaluate(() => window.__fractura.mirrorReady()));
 await page.screenshot({ path: OUT + 'p2-jugando.png' });
 
+// ------------------------------------------------- ritmo: arranque suave
+const spdStart = await page.evaluate(() => window.__fractura.speed());
+// Antes la partida arrancaba a 26 m/s al instante; ahora el crucero inicial es
+// 4.2 m/s y se alcanza de forma gradual, así que la velocidad leída justo tras
+// el clic debe seguir por debajo del propio crucero (todavía acelerando).
+const spdInfo = await page.evaluate(() => window.__fractura.speedInfo());
+check('2b. la partida arranca desde parado (v muy por debajo del antiguo 26 m/s)',
+  spdStart < 26 * 0.25, `v = ${spdStart.toFixed(2)} m/s (crucero inicial ${spdInfo.base})`);
+check('2b2. la velocidad parte de ~0 y crece despacio (configuración correcta)',
+  spdInfo.base === 4.2 && spdInfo.gain === 0.0026 && spdInfo.cap === 30,
+  `base ${spdInfo.base}, gain ${spdInfo.gain}, cap ${spdInfo.cap}`);
+await page.waitForTimeout(1600);
+const spd0 = await page.evaluate(() => window.__fractura.speed());
+check('2b3. un momento después sigue acelerando suavemente (v < crucero)', spd0 < spdInfo.base, `v = ${spd0.toFixed(2)} m/s`);
+const ballR = await page.evaluate(() => window.__fractura.ballR());
+check('2c. la esfera mide un poco más de la mitad que antes', ballR > 0.19 * 0.5 && ballR < 0.19 * 0.68, `r = ${ballR}`);
+const slingS = await page.evaluate(() => window.__fractura.slingScale());
+check('2d. el tirachinas escala con la esfera', Math.abs(slingS - ballR / 0.19 * 0.95) < 1e-6, `escala ${slingS.toFixed(3)}`);
+
 const d1 = (await readStats()).d;
-await page.waitForTimeout(5000);
+await page.waitForTimeout(12000);
 const d2 = (await readStats()).d;
-check('3. el mundo avanza (distancia crece)', d2 > d1 + 1, `${d1.toFixed(1)} m → ${d2.toFixed(1)} m`);
+check('3. el mundo avanza despacio (distancia crece sin despegar)', d2 > d1 + 1 && d2 - d1 < 60,
+  `${d1.toFixed(1)} m → ${d2.toFixed(1)} m (+${(d2 - d1).toFixed(1)} m en ~12 s)`);
+const spd1 = await page.evaluate(() => window.__fractura.speed());
+check('3b. la velocidad sigue siendo baja al empezar (v < 10 m/s)', spd1 < 10, `v = ${spd1.toFixed(2)} m/s`);
 
 // ------------------------------------------------- toque preciso (sin arrastrar)
 const a0 = await readAim();
