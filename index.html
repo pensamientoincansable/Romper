@@ -93,6 +93,14 @@
       mix-blend-mode: difference;
     }
     #reticle::after { content:""; position:absolute; left:50%; top:50%; width:3px; height:3px; margin:-1.5px; border-radius:50%; background:#fff; }
+    #reticle.near { border-color: color-mix(in srgb, var(--accent2) 85%, transparent); box-shadow: 0 0 18px color-mix(in srgb, var(--accent2) 55%, transparent), inset 0 0 10px color-mix(in srgb, var(--accent2) 30%, transparent); }
+    #rangeReadout {
+      position: fixed; bottom: max(32px, env(safe-area-inset-bottom)); right: 18px;
+      font-size: 0.6rem; letter-spacing: 0.3em; text-transform: uppercase; text-align: right;
+      color: color-mix(in srgb, var(--ink) 60%, transparent); pointer-events: none; opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    #hud.playing #rangeReadout { opacity: 1; }
 
     #hint {
       position: fixed; bottom: max(18px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
@@ -179,6 +187,7 @@
       <div id="heartsRow">◆ ◆ ◆ ◆</div>
     </div>
     <div id="distReadout">0 m</div>
+    <div id="rangeReadout">Alcance — 55 m</div>
   </div>
   <div id="reticle" class="hidden"></div>
   <div id="hint" class="hidden">Toca o haz clic en el punto exacto<br/>para lanzar · Mantén pulsado para repetir</div>

@@ -11,7 +11,6 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { AudioEngine } from './audio.js';
 import { THEMES, lerpColor } from './themes.js';
 
@@ -60,7 +59,11 @@ function safeStorageSet(key, value) {
 const TUNNEL_HALF = 3.8;          // semi-ancho del corredor
 const SX = TUNNEL_HALF / 3;       // factor de escala lateral de los patrones
 const CAM_HEIGHT = 1.62;
-const AIM_DIST = 55;               // profundidad del plano de puntería
+const AIM_DIST = 55;               // profundidad por defecto del plano de puntería
+// Rango completo de disparo: la puntería puede acercarse o alejarse a voluntad.
+const AIM_MIN = 4;                 // alcance mínimo (casi a quemarropa, dentro del túnel)
+const AIM_MAX = 78;                // alcance máximo (más allá del plano por defecto)
+const WHEEL_STEP = 6;              // metros por "clic" de rueda al ajustar el alcance
 const GRAVITY = 15;                // m/s² — la esfera cae poco a poco (arco tipo Smash Hit)
 const BALL_H_SPEED = 78;           // velocidad horizontal media de lanzamiento
 const FIRE_COOLDOWN = 0.16;        // cadencia del tirachinas
@@ -91,6 +94,7 @@ const el = {
   hud: $('hud'), reticle: $('reticle'), hint: $('hint'),
   score: $('scoreVal'), combo: $('comboVal'), ammoReadout: $('ammoReadout'),
   ammoDots: $('ammoDots'), hearts: $('heartsRow'), dist: $('distReadout'),
+  range: $('rangeReadout'),
   title: $('title'), gameover: $('gameover'), pause: $('pause'),
   settings: $('settings'), qualitySeg: $('qualitySeg'), safeToggle: $('safeToggle'),
   volMaster: $('volMaster'), volMusic: $('volMusic'), volSfx: $('volSfx'),
@@ -279,28 +283,50 @@ const rimLight = new THREE.DirectionalLight(0xff77ee, 0.5);
 rimLight.position.set(-8, 4, -6);
 scene.add(rimLight);
 
-// mapa de entorno procedural → reflejos en vidrio y metal
+// Mapa de entorno procedural de alta calidad → reflejos físicos creíbles en
+// vidrio, cristal y metal. Se usa también como fuente de luz ambiental (IBL).
 function makeEnvTexture() {
   const c = document.createElement('canvas');
-  c.width = 256; c.height = 128;
+  c.width = 512; c.height = 256;
   const x = c.getContext('2d');
-  const g = x.createLinearGradient(0, 0, 0, 128);
-  g.addColorStop(0, '#dff4ff');
-  g.addColorStop(0.35, '#5f87ad');
-  g.addColorStop(0.55, '#1c2c42');
-  g.addColorStop(1, '#05080d');
-  x.fillStyle = g; x.fillRect(0, 0, 256, 128);
-  x.fillStyle = 'rgba(255,255,255,0.85)';
-  for (let i = 0; i < 5; i++) x.fillRect(rand(0, 250), rand(8, 40), rand(20, 60), 2);
-  x.fillStyle = 'rgba(255,255,255,0.35)';
-  for (let i = 0; i < 10; i++) x.fillRect(rand(0, 250), rand(50, 90), rand(8, 40), 1.5);
+  const g = x.createLinearGradient(0, 0, 0, 256);
+  g.addColorStop(0.00, '#eaf7ff');
+  g.addColorStop(0.18, '#9fc7e8');
+  g.addColorStop(0.34, '#5f87ad');
+  g.addColorStop(0.52, '#24405f');
+  g.addColorStop(0.72, '#101a2c');
+  g.addColorStop(1.00, '#03060d');
+  x.fillStyle = g; x.fillRect(0, 0, 512, 256);
+  // franjas luminosas "conduit" que producen reflejos largos y limpios
+  const strip = (y, wy, h, a) => {
+    x.fillStyle = 'rgba(255,255,255,' + a + ')';
+    x.fillRect(0, y, 512, h);
+    for (let sx = rand(0, 500); sx < 512; sx += rand(24, 80)) {
+      x.fillRect(sx, y + rand(-2, 2), rand(3, 14), h + rand(-1, 1));
+    }
+  };
+  strip(24, 0, 3, 0.95);
+  strip(58, 0, 2, 0.55);
+  strip(120, 0, 2, 0.4);
+  strip(176, 0, 1.5, 0.28);
+  // manchas de luz difusa (ventanas de energía)
+  x.fillStyle = 'rgba(140,220,255,0.22)';
+  for (let i = 0; i < 14; i++) {
+    const gx = rand(0, 500), gy = rand(12, 110);
+    x.beginPath();
+    x.ellipse(gx, gy, rand(12, 42), rand(4, 14), rand(0, 3.14), 0, 6.28);
+    x.fill();
+  }
   const tex = new THREE.CanvasTexture(c);
   tex.mapping = THREE.EquirectangularReflectionMapping;
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
   return tex;
 }
 const pmrem = new THREE.PMREMGenerator(renderer);
+pmrem.compileEquirectangularShader();
 scene.environment = pmrem.fromEquirectangular(makeEnvTexture()).texture;
+scene.environmentIntensity = 1.15; // reflejos ambientales un punto más presentes
 
 // ---------------------------------------------------------------------------
 // Cielo (domo con gradiente multicapa + auroras sutiles) + estrellas
@@ -422,9 +448,6 @@ for (const [x, y, z, s, o] of [
 // Entorno del corredor (segmentos reciclables)
 // ---------------------------------------------------------------------------
 const envSegments = [];
-const wallStripGeo = new THREE.BoxGeometry(0.12, SEG_LEN, 0.12);
-const railGeo = new THREE.BoxGeometry(0.14, 0.14, SEG_LEN);
-const lampGeo = new THREE.BoxGeometry(0.55, 0.1, SEG_LEN);
 
 // textura procedural del suelo (escala de grises → se tiñe con la paleta)
 function makeFloorTexture() {
@@ -474,16 +497,97 @@ const wallMat = new THREE.MeshStandardMaterial({
   color: 0x14243a, roughness: 0.85, metalness: 0.2,
   emissiveMap: wallTex, emissive: 0xffffff, emissiveIntensity: 0.3,
 });
-const railMat = new THREE.MeshStandardMaterial({
-  color: 0xffffff, emissive: 0x6fd7ff, emissiveIntensity: 1.25, roughness: 0.4, metalness: 0.2,
+
+// ---------------------------------------------------------------------------
+// Rejilla luminosa del corredor con InstancedBufferGeometry.
+// Todos los elementos brillantes de un segmento (rieles, neón lateral, lámpara
+// y marcos de portal) se dibujan en UNA sola llamada de dibujo, con un shader
+// propio que aporta resplandor, pulso y un filo especular (fresnel) realista.
+// Comparten un único material, de modo que el color se tiñe con la paleta en
+// applyBlendedColors() sin recompilar nada.
+// ---------------------------------------------------------------------------
+const envGlowUniforms = {
+  uColor: { value: new THREE.Color(0x6fd7ff) },
+  uTime: { value: 0 },
+};
+const envGlowMat = new THREE.ShaderMaterial({
+  uniforms: envGlowUniforms,
+  vertexShader: `
+    attribute mat4 instanceMatrix;
+    varying vec3 vViewNormal;
+    varying vec3 vViewPos;
+    void main() {
+      vec4 local = instanceMatrix * vec4(position, 1.0);
+      vec4 mv = modelViewMatrix * local;
+      gl_Position = projectionMatrix * mv;
+      vViewPos = mv.xyz;
+      vViewNormal = normalize(mat3(modelViewMatrix) * mat3(instanceMatrix) * normal);
+    }`,
+  fragmentShader: `
+    uniform vec3 uColor;
+    uniform float uTime;
+    varying vec3 vViewNormal;
+    varying vec3 vViewPos;
+    void main() {
+      vec3 N = normalize(vViewNormal);
+      vec3 V = normalize(-vViewPos);
+      // filo especular (fresnel) para que las aristas brillen como cristal
+      float fres = pow(1.0 - abs(dot(N, V)), 2.2);
+      // pulso suave y lento (nunca estroboscópico)
+      float pulse = 0.82 + 0.18 * sin(uTime * 1.6);
+      vec3 col = uColor * (0.9 + fres * 2.0) * pulse;
+      gl_FragColor = vec4(col, 1.0);
+    }`,
+  side: THREE.DoubleSide,
+  blending: THREE.AdditiveBlending,
+  transparent: true,
+  depthWrite: false,
+  fog: false,
 });
 
-// marco de portal (U invertida) — da estructura y sensación de velocidad
-const portalGeo = mergeGeometries([
-  new THREE.BoxGeometry(0.16, 4.9, 0.16).translate(-TUNNEL_HALF + 0.08, 2.45, 0),
-  new THREE.BoxGeometry(0.16, 4.9, 0.16).translate(TUNNEL_HALF - 0.08, 2.45, 0),
-  new THREE.BoxGeometry(TUNNEL_HALF * 2, 0.16, 0.16).translate(0, 4.4, 0),
-]);
+// Construye la geometría instanciada de un segmento (en su espacio local).
+function makeEnvGlowGeometry(zc) {
+  const base = new THREE.BoxGeometry(1, 1, 1);
+  const geo = new THREE.InstancedBufferGeometry();
+  geo.index = base.index;
+  geo.setAttribute('position', base.attributes.position);
+  geo.setAttribute('normal', base.attributes.normal);
+  geo.setAttribute('uv', base.attributes.uv);
+
+  // Recoge todas las instancias del segmento (rieles, neón, lámpara, portales).
+  const items = [];
+  const rail = (x, y) => items.push({ x, y, z: zc, sx: 0.14, sy: 0.14, sz: SEG_LEN });
+  rail(TUNNEL_HALF - 0.12, 0.06);
+  rail(-TUNNEL_HALF + 0.12, 0.06);
+  rail(TUNNEL_HALF - 0.12, 4.62);
+  rail(-TUNNEL_HALF + 0.12, 4.62);
+  items.push({ x: -TUNNEL_HALF + 0.06, y: 2.2, z: zc, sx: 0.07, sy: 0.07, sz: SEG_LEN });
+  items.push({ x: TUNNEL_HALF - 0.06, y: 2.2, z: zc, sx: 0.07, sy: 0.07, sz: SEG_LEN });
+  items.push({ x: 0, y: 4.42, z: zc, sx: 0.55, sy: 0.1, sz: SEG_LEN });
+  for (let s = 0; s < SEG_LEN / 20; s++) {
+    const z = -s * 20 - 30;
+    items.push({ x: -TUNNEL_HALF + 0.08, y: 2.45, z, sx: 0.16, sy: 4.9, sz: 0.16 });
+    items.push({ x: TUNNEL_HALF - 0.08, y: 2.45, z, sx: 0.16, sy: 4.9, sz: 0.16 });
+    items.push({ x: 0, y: 4.4, z, sx: TUNNEL_HALF * 2, sy: 0.16, sz: 0.16 });
+  }
+
+  const n = items.length;
+  const matrix = new Float32Array(n * 16);
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const p = new THREE.Vector3();
+  const s = new THREE.Vector3();
+  for (let i = 0; i < n; i++) {
+    const it = items[i];
+    p.set(it.x, it.y, it.z);
+    s.set(it.sx, it.sy, it.sz);
+    m.compose(p, q, s);
+    m.toArray(matrix, i * 16);
+  }
+  geo.setAttribute('instanceMatrix', new THREE.InstancedBufferAttribute(matrix, 16));
+  geo.instanceCount = n;
+  return geo;
+}
 
 function buildEnv() {
   for (let i = 0; i < SEG_COUNT; i++) {
@@ -500,34 +604,11 @@ function buildEnv() {
     wallR.position.x = TUNNEL_HALF + 0.2;
     g.add(floor, ceil, wallL, wallR);
 
-    const mkRail = (x, y) => {
-      const r = new THREE.Mesh(railGeo, railMat);
-      r.position.set(x, y, zc);
-      return r;
-    };
-    g.add(mkRail(TUNNEL_HALF - 0.12, 0.06));
-    g.add(mkRail(-TUNNEL_HALF + 0.12, 0.06));
-    g.add(mkRail(TUNNEL_HALF - 0.12, 4.62));
-    g.add(mkRail(-TUNNEL_HALF + 0.12, 4.62));
-
-    // línea de neón lateral a media altura
-    const side = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, SEG_LEN), railMat);
-    side.position.set(-TUNNEL_HALF + 0.06, 2.2, zc);
-    const side2 = side.clone(); side2.position.x = TUNNEL_HALF - 0.06;
-    g.add(side, side2);
-
-    // lámpara central del techo
-    const lamp = new THREE.Mesh(lampGeo, railMat);
-    lamp.position.set(0, 4.42, zc);
-    g.add(lamp);
-
-    // marcos de portal cada 20 m (en coordenadas locales)
-    for (let s = 0; s < SEG_LEN / 20; s++) {
-      const z = -s * 20 - 30;
-      const portal = new THREE.Mesh(portalGeo, railMat);
-      portal.position.z = z;
-      g.add(portal);
-    }
+    // Rejilla luminosa instanciada (rieles, neón lateral, lámpara y portales)
+    // → una sola llamada de dibujo por segmento con InstancedBufferGeometry.
+    const glow = new THREE.Mesh(makeEnvGlowGeometry(zc), envGlowMat);
+    glow.frustumCulled = false;
+    g.add(glow);
     g.position.z = z0;
     scene.add(g);
     envSegments.push(g);
@@ -538,10 +619,16 @@ buildEnv();
 // ---------------------------------------------------------------------------
 // Materiales compartidos (se actualizan al cambiar de paleta)
 // ---------------------------------------------------------------------------
+// Vidrio de los paneles/columnas/repisas: refracción real + velo de
+// iridiscencia + reflejos del entorno, con fresnel automático del material.
 const glassMat = new THREE.MeshPhysicalMaterial({
-  color: 0xa8e8ff, roughness: 0.05, metalness: 0, transmission: 0.28,
-  thickness: 0.7, transparent: true, opacity: 0.88, side: THREE.DoubleSide,
-  emissive: 0x2b7fd4, emissiveIntensity: 0.34, clearcoat: 1, envMapIntensity: 1.4,
+  color: 0xa8e8ff, roughness: 0.03, metalness: 0,
+  transmission: 0.62, thickness: 0.9, ior: 1.45,
+  attenuationColor: 0x9fd8ff, attenuationDistance: 3.0,
+  transparent: true, opacity: 0.82, side: THREE.DoubleSide,
+  emissive: 0x2b7fd4, emissiveIntensity: 0.3, clearcoat: 1, clearcoatRoughness: 0.06,
+  iridescence: 0.4, iridescenceIOR: 1.3, iridescenceThicknessRange: [140, 520],
+  specularIntensity: 1, envMapIntensity: 1.85,
 });
 // (metalMat se retiró: todas las esferas usan ahora ballMat, iridiscente)
 const haloMat = new THREE.SpriteMaterial({
@@ -666,9 +753,36 @@ function buildMirrorTexture() {
   return rt.texture;
 }
 const mirrorTex = buildMirrorTexture();
-const mirrorMat = new THREE.MeshStandardMaterial({
-  color: 0x14181f, metalness: 1.0, roughness: 0.04,
-  envMap: mirrorTex, envMapIntensity: 2.4, side: THREE.DoubleSide,
+
+// ---------------------------------------------------------------------------
+// Cristal "de verdad": refracción física (transmission), dispersión / velo
+// iridiscente en los bordes, espesor con absorción de color y el reflejo del
+// tirachinas (cubemap) como espejo pulido. Es el material que se usa en los
+// cristales rompibles, que se tiñen con la paleta en applyBlendedColors().
+// ---------------------------------------------------------------------------
+const crystalMat = new THREE.MeshPhysicalMaterial({
+  color: 0xdff4ff,
+  metalness: 0,
+  roughness: 0.015,
+  transmission: 1.0,            // refracción real (cristal translúcido)
+  ior: 1.52,                    // índice de refracción del cuarzo/vidrio
+  thickness: 2.4,               // espesor → desplaza la refracción
+  attenuationColor: 0xbfeaff,   // absorción: toma un tinte según el grosor
+  attenuationDistance: 2.2,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.04,
+  iridescence: 1.0,             // arcoíris de película fina en los bordes
+  iridescenceIOR: 1.4,
+  iridescenceThicknessRange: [220, 720],
+  specularIntensity: 1.0,
+  specularColor: 0xffffff,
+  envMap: mirrorTex,            // refleja el tirachinas (espejo pulido)
+  envMapIntensity: 3.0,
+  emissive: 0x2457c8,
+  emissiveIntensity: 0.28,
+  side: THREE.DoubleSide,
+  transparent: true,
+  opacity: 0.92,
 });
 
 // ---------------------------------------------------------------------------
@@ -907,9 +1021,9 @@ function makeColumn(x, z) {
 
 function makeCrystal(x, y, z, s = 1) {
   const sc = Math.max(0.3, s * sizeScale);
-  const mesh = new THREE.Mesh(GEO.crystal, mirrorMat); // espejo: refleja el tirachinas
+  const mesh = new THREE.Mesh(GEO.crystal, crystalMat); // cristal: refracción + espejo del tirachinas
   mesh.position.set(x, y, z);
-  mesh.scale.setScalar(sc);
+  mesh.scale.set(sc * 1.0, sc * 1.35, sc * 1.0); // tallado alargado de cristal
   mesh.rotation.set(rand(0, 6.28), rand(0, 6.28), rand(0, 6.28));
   scene.add(mesh);
   const o = obstacleData('crystal', mesh, { radius: 0.3 * sc, score: 35 });
@@ -1052,6 +1166,8 @@ const camBase = new THREE.Vector3(0, CAM_HEIGHT, 0);
 let fireCooldown = 0;
 let shotsFired = 0;
 let ammoGainedTotal = 0;
+// Profundidad actual de la puntería (rango completo: cercano ↔ lejano).
+let aimDist = AIM_DIST;
 const lastAimPoint = new THREE.Vector3(0, 1.7, -AIM_DIST); // último punto tocado
 
 const ARC_PTS = 24; // puntos de la estela / arco previo
@@ -1375,6 +1491,9 @@ function computeThemeTargets(th) {
 function applyBlendedColors() {
   glassMat.color.copy(blendCur.glass);
   glassMat.emissive.copy(blendCur.glassEm);
+  crystalMat.color.copy(blendCur.glass);
+  crystalMat.emissive.copy(blendCur.glassEm);
+  crystalMat.attenuationColor.copy(blendCur.glass);
   scene.fog.color.copy(blendCur.fog);
   skyUniforms.topColor.value.copy(blendCur.skyTop);
   skyUniforms.midColor.value.copy(blendCur.skyMid);
@@ -1384,8 +1503,7 @@ function applyBlendedColors() {
   floorMat.emissive.copy(blendCur.floorEm);
   wallMat.color.copy(blendCur.wall);
   wallMat.emissive.copy(blendCur.wallEm);
-  railMat.color.copy(blendCur.rail);
-  railMat.emissive.copy(blendCur.rail);
+  envGlowUniforms.uColor.value.copy(blendCur.rail);
   glowFarglow.material.color.copy(blendCur.glowFar);
   orbs[0].material.color.copy(blendCur.orb0);
   orbs[1].material.color.copy(blendCur.orb1);
@@ -1477,6 +1595,8 @@ function startGame(skipMeters = 0) {
   fireCooldown = 0;
   pointerDown = false; spaceHeld = false;
   hoverScreen = null;
+  aimDist = AIM_DIST; // el alcance vuelve al valor por defecto en cada partida
+  updateRangeUI();
   lastAimPoint.set(0, 1.7, camera.position.z - AIM_DIST);
   aim.x = aimTarget.x = 0; aim.y = aimTarget.y = 1.7;
   slingshot.userData.charge = 0;
@@ -1500,6 +1620,7 @@ function startGame(skipMeters = 0) {
   el.gameover.classList.add('hidden');
   el.pause.classList.add('hidden');
   el.hud.classList.remove('hidden');
+  el.hud.classList.add('playing');
   el.reticle.classList.remove('hidden');
   el.uiBtns.classList.remove('hidden');
   el.hint.classList.remove('hidden');
@@ -1528,6 +1649,7 @@ function endToMenu() {
   el.hint.classList.add('hidden');
   el.hint.classList.remove('fade');
   el.hud.classList.add('hidden');
+  el.hud.classList.remove('playing');
   el.reticle.classList.add('hidden');
   el.uiBtns.classList.add('hidden');
   el.gameover.classList.add('hidden');
@@ -1587,7 +1709,8 @@ function screenRayPoint(clientX, clientY, zPlane) {
 }
 
 // El punto exacto al que se dispara: si el rayo toca un obstáculo se apunta a
-// él (precisión a cualquier profundidad); si no, al plano de puntería.
+// él (precisión a cualquier profundidad); si no, al plano de puntería a la
+// profundidad elegida (aimDist), que puede ir de muy cerca a muy lejos.
 function pickTargetPoint(clientX, clientY) {
   _ndc.x = (clientX / window.innerWidth) * 2 - 1;
   _ndc.y = -(clientY / window.innerHeight) * 2 + 1;
@@ -1595,9 +1718,11 @@ function pickTargetPoint(clientX, clientY) {
   const r = tapRay.ray;
   let best = null;
   let bestT = Infinity;
+  // Distancia máxima a la que buscamos objetivos = el alcance actual + un margen
+  const reach = Math.max(aimDist, AIM_DIST) + 28;
   for (const o of obstacles) {
     const c = o.mesh.position;
-    if (c.z < camera.position.z - AIM_DIST - 25) continue;
+    if (c.z < camera.position.z - reach) continue;
     if (o.type === 'ring' || o.type === 'ringBig') {
       const tPlane = (c.z - r.origin.z) / r.direction.z;
       if (tPlane < 0 || tPlane > bestT) continue;
@@ -1615,7 +1740,7 @@ function pickTargetPoint(clientX, clientY) {
     if (t > 0 && t < bestT && cp.distanceTo(c) < rad) { bestT = t; best = c.clone(); }
   }
   if (best) return best;
-  const p = screenRayPoint(clientX, clientY, camera.position.z - AIM_DIST);
+  const p = screenRayPoint(clientX, clientY, camera.position.z - aimDist);
   if (!p) return null;
   p.x = clamp(p.x, -TUNNEL_HALF + 0.2, TUNNEL_HALF - 0.2);
   p.y = clamp(p.y, 0.35, 4.4);
@@ -1654,6 +1779,22 @@ window.addEventListener('pointermove', onPointerMove, { passive: true });
 window.addEventListener('pointerup', onPointerUp);
 window.addEventListener('pointercancel', onPointerUp);
 document.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// Rango completo de disparo: la rueda del ratón acerca o aleja el plano de
+// puntería. La retícula y el arco fantasma se actualizan en consecuencia.
+function updateRangeUI() {
+  if (el.range) el.range.textContent = 'Alcance — ' + Math.round(aimDist) + ' m';
+  // La retícula se tiñe de acento2 cuando apuntamos muy cerca (rango corto).
+  const near = aimDist <= 14;
+  el.reticle.classList.toggle('near', near);
+}
+window.addEventListener('wheel', (e) => {
+  if (state !== 'playing') return;
+  e.preventDefault();
+  aimDist = clamp(aimDist + (e.deltaY > 0 ? -WHEEL_STEP : WHEEL_STEP), AIM_MIN, AIM_MAX);
+  updateRangeUI();
+}, { passive: false });
+
 let spaceHeld = false;
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') { e.preventDefault(); spaceHeld = true; }
@@ -1904,6 +2045,7 @@ function updateWorld(dt) {
   updateThemeBlend(dt);
   updateBallIridescence(elapsed);
   skyUniforms.uTime.value = elapsed;
+  envGlowUniforms.uTime.value = elapsed;
   stars.material.opacity = fxCaps().stars * (0.86 + 0.14 * Math.sin(elapsed * 1.6));
   glowFarglow.material.opacity = 0.105 + 0.03 * Math.sin(elapsed * 0.42);
 
@@ -1942,8 +2084,8 @@ function updateWorld(dt) {
     if (hintTimer <= 0) el.hint.classList.add('fade');
   }
 
-  // retícula
-  const rp = new THREE.Vector3(aim.x, aim.y, camera.position.z - AIM_DIST);
+  // retícula (a la profundidad elegida de alcance)
+  const rp = new THREE.Vector3(aim.x, aim.y, camera.position.z - aimDist);
   rp.project(camera);
   const rsx = (rp.x * 0.5 + 0.5) * window.innerWidth;
   const rsy = (-rp.y * 0.5 + 0.5) * window.innerHeight;
@@ -2021,8 +2163,10 @@ if (new URLSearchParams(location.search).has('debug')) {
       aimTarget.y = clamp(y, 0.7, 3.5);
       aim.x = aimTarget.x;
       aim.y = aimTarget.y;
-      lastAimPoint.set(aim.x, aim.y, camera.position.z - AIM_DIST);
+      lastAimPoint.set(aim.x, aim.y, camera.position.z - aimDist);
     },
+    aimDist: () => aimDist,
+    setAimDist: (d) => { aimDist = clamp(d, AIM_MIN, AIM_MAX); updateRangeUI(); lastAimPoint.set(aim.x, aim.y, camera.position.z - aimDist); },
     cam: () => ({ x: camera.position.x, y: camera.position.y, z: camera.position.z, rx: camera.rotation.x, ry: camera.rotation.y, rz: camera.rotation.z }),
     segs: () => envSegments.slice(0, 14).map((s) => Math.round(s.position.z)),
     // --- ajustes / accesibilidad (para pruebas) ---

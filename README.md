@@ -12,11 +12,12 @@ reconstruye con identidad propia:
 | FRACTURA | En lugar de… |
 |---|---|
 | Tirachinas con disparo por toque preciso y arco balístico | apuntado arrastrando |
+| **Disparo con rango completo** (la rueda acerca/aleja el plano de puntería: de 4 m a 78 m) | solo se podía disparar a un plano fijo |
 | Esfera iridiscente que cambia de color con el ambiente (tono complementario) | esfera de aspecto fijo |
-| Cristales que son espejos pulidos (reflejan tu tirachinas) | cristal dorado tradicional |
+| **Cristales "de verdad"**: refracción física (transmission), espesor con absorción de color, iridiscencia de película fina y espejo del tirachinas | cristal dorado tradicional |
 | 6 paletas que respiran y se funden despacio al superar cada sección: hielo, ámbar, orquídea, esmeralda, rubí, neón | un solo esquema de color |
 | Cielo con gradiente multicapa, auroras suaves y estrellas que titilean | cielo estático |
-| Corredor futurista con portales de luz y rejillas | pasillo clásico de galería |
+| Corredor futurista con portales de luz y rejillas **instanciadas (InstancedBufferGeometry)** en una sola llamada de dibujo con fresnel y pulso | pasillo clásico de galería |
 | Cada rotura devuelve esferas: cuanto más pequeño el objetivo, más te da | esferas flotantes estáticas |
 | Progresión suave: se arranca desde parado, la velocidad crece muy despacio y la dificultad de puntería avanza al mismo ritmo | — |
 | Ajustes de volumen, calidad de gráficos y **modo seguro (epilepsia)** | — |
@@ -32,7 +33,13 @@ ningún asset externo ni binario.
 - **Disparar** — la esfera sale del tirachinas y cae en arco hasta el punto tocado;
   mantén pulsado para repetir el disparo (o `ESPACIO` en teclado). Una guía tenue muestra
   el arco antes de soltar.
-- **Romper** — el vidrio se hace añicos; los cristales son espejos que reflejan tu tirachinas.
+- **Rango completo** — usa la **rueda del ratón** en plena partida para acercar o alejar
+  el plano de puntería (de 4 m a 78 m). El indicador "ALCANCE" y el color de la retícula
+  te avisan de la profundidad; apuntar muy cerca tiñe la retícula del tono de acento
+  secundario para distinguir el tiro corto del lejano.
+- **Romper** — el vidrio se hace añicos; los cristales son de verdad: refractan la luz
+  (`transmission`, espesor e IOR), muestran iridiscencia de película fina en los bordes
+  y reflejan tu tirachinas como un espejo pulido.
 - **Esfera iridiscente** — la esfera cambia de color según el ambiente (tono complementario, máximo contraste) y oscila como una película de aceite.
 - **Esferas** — cada rotura devuelve esferas: cuanto más pequeño y difícil es el objetivo,
   más esferas otorga. Romper es la forma de seguir disparando.
