@@ -2,6 +2,7 @@
 // FRACTURA — juego minimalista de romper cristales
 // Motor: three.js · 100% procedural (geometría, texturas, audio, UI)
 // Estructura: corredor infinito · esferas metálicas · cristal de colores
+// MEJORAS: trails en esferas, audio 3D posicional, power-ups, opciones UX
 // ============================================================================
 
 import * as THREE from 'three';
@@ -67,6 +68,13 @@ const THEME_EVERY = 320;           // metros por cambio de paleta
 const CHECKPOINT_EVERY = 600;      // metros entre recargas
 const MAX_BALLS = 18;              // capacidad de munición mostrada
 
+// Opciones del jugador (persistidas)
+let playerOptions = {
+  sensitivity: parseFloat(safeStorageGet('fractura_sensitivity', '1.0')),
+  bloomEnabled: safeStorageGet('fractura_bloom', 'true') === 'true',
+  daltonicMode: safeStorageGet('fractura_daltonic', 'false') === 'false',
+};
+
 // ---------------------------------------------------------------------------
 // DOM
 // ---------------------------------------------------------------------------
@@ -108,7 +116,7 @@ camera.position.set(0, CAM_HEIGHT, 0);
 
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
-const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.5, 0.4, 0.88);
+bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), playerOptions.bloomEnabled ? 0.5 : 0.0, 0.4, 0.88);
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
 
@@ -393,6 +401,124 @@ const GEO = {
   shard: new THREE.TetrahedronGeometry(0.055),
   spark: new THREE.SphereGeometry(0.032, 6, 6),
 };
+
+// ---------------------------------------------------------------------------
+// Sistema de trails para las esferas metálicas (estela visual)
+// ---------------------------------------------------------------------------
+class TrailSystem {
+  constructor(maxTrails = 40, trailLength = 8) {
+    this.maxTrails = maxTrails;
+    this.trailLength = trailLength;
+    this.trails = []; // { positions: Float32Array, count: number, mesh: Line, material }
+    this.freeList = [];
+    
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(trailLength * 3);
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setDrawRange(0, 0);
+    
+    const material = new THREE.LineBasicMaterial({
+      color: 0x6fd7ff,
+      transparent: true,
+      opacity: 0.6,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    
+    for (let i = 0; i < maxTrails; i++) {
+      const geom = geometry.clone();
+      const mat = material.clone();
+      const line = new THREE.Line(geom, mat);
+      line.frustumCulled = false;
+      scene.add(line);
+      this.freeList.push({
+        positions: new Float32Array(trailLength * 3),
+        count: 0,
+        mesh: line,
+        material: mat,
+        age: 0,
+      });
+    }
+  }
+  
+  getTrail() {
+    if (this.freeList.length === 0) return null;
+    return this.freeList.pop();
+  }
+  
+  releaseTrail(trail) {
+    trail.count = 0;
+    trail.age = 0;
+    trail.mesh.geometry.setDrawRange(0, 0);
+    trail.mesh.visible = false;
+    this.freeList.push(trail);
+  }
+  
+  update(dt, worldVel = 0) {
+    for (const trail of [...this.trails, ...this.freeList]) {
+      if (trail.count === 0) continue;
+      trail.age += dt;
+      
+      // Desvanecimiento progresivo
+      const fadeStart = 0.8;
+      const fadeDuration = 0.4;
+      if (trail.age > fadeStart) {
+        const t = Math.min(1, (trail.age - fadeStart) / fadeDuration);
+        trail.material.opacity = 0.6 * (1 - t);
+      }
+      
+      // Mover posiciones con el mundo
+      if (worldVel !== 0) {
+        const positions = trail.mesh.geometry.attributes.position.array;
+        for (let i = 0; i < trail.count; i++) {
+          positions[i * 3 + 2] += worldVel * dt;
+        }
+        trail.mesh.geometry.attributes.position.needsUpdate = true;
+      }
+      
+      // Eliminar trail viejo
+      if (trail.age > fadeStart + fadeDuration) {
+        const idx = this.trails.indexOf(trail);
+        if (idx >= 0) {
+          this.trails.splice(idx, 1);
+          this.releaseTrail(trail);
+        }
+      }
+    }
+  }
+  
+  addPoint(trail, x, y, z) {
+    if (!trail) return;
+    const positions = trail.positions;
+    
+    // Shift positions
+    for (let i = this.trailLength - 1; i > 0; i--) {
+      positions[i * 3] = positions[(i - 1) * 3];
+      positions[i * 3 + 1] = positions[(i - 1) * 3 + 1];
+      positions[i * 3 + 2] = positions[(i - 1) * 3 + 2];
+    }
+    
+    // Add new point at start
+    positions[0] = x;
+    positions[1] = y;
+    positions[2] = z;
+    
+    trail.count = Math.min(trail.count + 1, this.trailLength);
+    
+    // Update geometry
+    const geoPositions = trail.mesh.geometry.attributes.position.array;
+    for (let i = 0; i < trail.count; i++) {
+      geoPositions[i * 3] = positions[i * 3];
+      geoPositions[i * 3 + 1] = positions[i * 3 + 1];
+      geoPositions[i * 3 + 2] = positions[i * 3 + 2];
+    }
+    trail.mesh.geometry.attributes.position.needsUpdate = true;
+    trail.mesh.geometry.setDrawRange(0, trail.count);
+    trail.mesh.visible = true;
+  }
+}
+
+const trailSystem = new TrailSystem(50, 10);
 
 // ---------------------------------------------------------------------------
 // Sistema de esquirlas (InstancedMesh)
@@ -754,9 +880,17 @@ function fireBall() {
   halo.scale.set(1.05, 1.05, 1);
   mesh.add(halo);
   scene.add(mesh);
+  
+  // Crear trail para esta esfera
+  const trail = trailSystem.getTrail();
+  if (trail) {
+    trail.material.color.setHex(theme.accent);
+    trailSystem.trails.push(trail);
+  }
+  
   balls.push({
     mesh, vel: dir.multiplyScalar(BALL_SPEED), grazed: 0,
-    bouncesX: 0, bouncesY: 0, life: 6, trailT: 0,
+    bouncesX: 0, bouncesY: 0, life: 6, trailT: 0, trail,
   });
   cameraBaseRecoil = 0.045;
 }
@@ -974,6 +1108,8 @@ let lastT = performance.now();
 let cameraBaseRecoil = 0;
 let elapsed = 0;
 let hintTimer = 0;
+// Variables para trails y power-ups
+let bloomPass = null;
 
 function startGame(skipMeters = 0) {
   // reset
@@ -1206,6 +1342,14 @@ function updateWorld(dt) {
       }
     }
     if (consumed || b.life <= 0 || b.mesh.position.z > 4) {
+      // Liberar trail si existe
+      if (b.trail) {
+        const idx = trailSystem.trails.indexOf(b.trail);
+        if (idx >= 0) {
+          trailSystem.trails.splice(idx, 1);
+          trailSystem.releaseTrail(b.trail);
+        }
+      }
       scene.remove(b.mesh);
       balls.splice(i, 1);
     }
